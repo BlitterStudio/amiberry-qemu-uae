@@ -1,0 +1,359 @@
+From 1f031b8189da32e17bde1c2914c530ef158b1e86 Mon Sep 17 00:00:00 2001
+From: Stefan Reinauer <stefan.reinauer@coreboot.org>
+Date: Wed, 27 May 2026 21:46:12 -0700
+Subject: [PATCH 7/7] uae: implement slirp for modern libslirp
+
+Replace the slirp stub with a bridge for modern libslirp releases.
+
+Create the SlirpConfig setup, callback table, timer handling, socket
+notification, and QEMU main-loop integration needed to move packets
+between UAE and libslirp.
+
+Handle libslirp 4.7 and 4.9 API differences with the version checks
+provided by libslirp. Keep slirp disabled in the default plugin
+configure profile so qemu-uae.so does not gain the dependency unless
+networking is enabled later.
+---
+ configure-qemu-uae   |   1 +
+ uae/qemu-uae-slirp.c | 290 ++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 271 insertions(+), 20 deletions(-)
+
+diff --git a/configure-qemu-uae b/configure-qemu-uae
+index 346576135..43a5a2f27 100755
+--- a/configure-qemu-uae
++++ b/configure-qemu-uae
+@@ -82,6 +82,7 @@ esac
+     --disable-numa \
+     --disable-rdma \
+     --disable-smartcard \
++    --disable-slirp \
+     --disable-pie \
+     --disable-vvfat \
+     --disable-qed \
+diff --git a/uae/qemu-uae-slirp.c b/uae/qemu-uae-slirp.c
+index 6c4c96701..3a6f0a176 100644
+--- a/uae/qemu-uae-slirp.c
++++ b/uae/qemu-uae-slirp.c
+@@ -19,35 +19,295 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/sockets.h"
++#include "qemu/main-loop.h"
++#include "qemu/timer.h"
+ #include "qemu-uae.h"
+ 
+ #include "uae/log.h"
+ #include "uae/qemu.h"
+ 
+-/* Note: Slirp has been moved to a separate subproject in modern QEMU.
+- * This file may need significant adaptation depending on how slirp
+- * is integrated in the build. For now, we provide stub implementations
+- * that can be filled in once the build system is set up. */
+-
+ UAE_DEFINE_IMPORT_FUNCTION(uae_slirp_output)
+ 
+ #ifdef CONFIG_SLIRP
+-#include "slirp/libslirp.h"
++
++#include <libslirp.h>
+ 
+ static Slirp *slirp;
+ 
++/*
++ * SlirpCb callback: send a packet from slirp to the UAE guest
++ */
++static ssize_t uae_slirp_send_packet(const void *pkt, size_t pkt_len,
++                                      void *opaque)
++{
++    if (uae_slirp_output == NULL) {
++        return -1;
++    }
++    uae_slirp_output(pkt, pkt_len);
++    return pkt_len;
++}
++
++/*
++ * SlirpCb callback: log guest errors
++ */
++static void uae_slirp_guest_error(const char *msg, void *opaque)
++{
++    uae_log("QEMU: slirp guest error: %s", msg);
++}
++
++/*
++ * SlirpCb callback: get virtual clock time in nanoseconds
++ */
++static int64_t uae_slirp_clock_get_ns(void *opaque)
++{
++    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++}
++
++/*
++ * Timer support for slirp
++ */
++typedef struct UaeSlirpTimer {
++    QEMUTimer timer;
++#if SLIRP_CHECK_VERSION(4, 7, 0)
++    Slirp *slirp;
++    SlirpTimerId id;
++    void *cb_opaque;
++#endif
++} UaeSlirpTimer;
++
++#if SLIRP_CHECK_VERSION(4, 7, 0)
++
++static void uae_slirp_init_completed(Slirp *s, void *opaque)
++{
++    slirp = s;
++}
++
++static void uae_slirp_timer_cb(void *opaque)
++{
++    UaeSlirpTimer *t = opaque;
++    slirp_handle_timer(t->slirp, t->id, t->cb_opaque);
++}
++
++static void *uae_slirp_timer_new_opaque(SlirpTimerId id,
++                                         void *cb_opaque, void *opaque)
++{
++    UaeSlirpTimer *t = g_new(UaeSlirpTimer, 1);
++    t->slirp = slirp;
++    t->id = id;
++    t->cb_opaque = cb_opaque;
++    timer_init_full(&t->timer, NULL, QEMU_CLOCK_VIRTUAL,
++                    SCALE_MS, QEMU_TIMER_ATTR_EXTERNAL,
++                    uae_slirp_timer_cb, t);
++    return t;
++}
++
++#else /* libslirp < 4.7.0 */
++
++static void *uae_slirp_timer_new(SlirpTimerCb cb,
++                                  void *cb_opaque, void *opaque)
++{
++    UaeSlirpTimer *t = g_new(UaeSlirpTimer, 1);
++    timer_init_full(&t->timer, NULL, QEMU_CLOCK_VIRTUAL,
++                    SCALE_MS, QEMU_TIMER_ATTR_EXTERNAL,
++                    cb, cb_opaque);
++    return t;
++}
++
++#endif /* SLIRP_CHECK_VERSION(4, 7, 0) */
++
++static void uae_slirp_timer_free(void *timer, void *opaque)
++{
++    UaeSlirpTimer *t = timer;
++    timer_del(&t->timer);
++    g_free(t);
++}
++
++static void uae_slirp_timer_mod(void *timer, int64_t expire_timer,
++                                 void *opaque)
++{
++    UaeSlirpTimer *t = timer;
++    timer_mod(&t->timer, expire_timer);
++}
++
++/*
++ * Socket registration callbacks
++ */
++#if !SLIRP_CHECK_VERSION(4, 9, 0)
++# define slirp_os_socket int
++# define slirp_pollfds_fill_socket slirp_pollfds_fill
++# define register_poll_socket register_poll_fd
++# define unregister_poll_socket unregister_poll_fd
++#endif
++
++static void uae_slirp_register_poll_sock(slirp_os_socket fd, void *opaque)
++{
++#ifdef WIN32
++    AioContext *ctxt = qemu_get_aio_context();
++    if (WSAEventSelect(fd, event_notifier_get_handle(&ctxt->notifier),
++                       FD_READ | FD_ACCEPT | FD_CLOSE |
++                       FD_CONNECT | FD_WRITE | FD_OOB) != 0) {
++        uae_log("QEMU: slirp failed to WSAEventSelect()\n");
++    }
++#endif
++    (void)fd;
++    (void)opaque;
++}
++
++static void uae_slirp_unregister_poll_sock(slirp_os_socket fd, void *opaque)
++{
++#ifdef WIN32
++    if (WSAEventSelect(fd, NULL, 0) != 0) {
++        uae_log("QEMU: slirp failed to unregister WSAEventSelect()\n");
++    }
++#endif
++    (void)fd;
++    (void)opaque;
++}
++
++static void uae_slirp_notify(void *opaque)
++{
++    qemu_notify_event();
++}
++
++/*
++ * SlirpCb callback table
++ */
++static const SlirpCb uae_slirp_cb = {
++    .send_packet = uae_slirp_send_packet,
++    .guest_error = uae_slirp_guest_error,
++    .clock_get_ns = uae_slirp_clock_get_ns,
++#if SLIRP_CHECK_VERSION(4, 7, 0)
++    .init_completed = uae_slirp_init_completed,
++    .timer_new_opaque = uae_slirp_timer_new_opaque,
++#else
++    .timer_new = uae_slirp_timer_new,
++#endif
++    .timer_free = uae_slirp_timer_free,
++    .timer_mod = uae_slirp_timer_mod,
++    .register_poll_socket = uae_slirp_register_poll_sock,
++    .unregister_poll_socket = uae_slirp_unregister_poll_sock,
++    .notify = uae_slirp_notify,
++};
++
++/*
++ * Poll event conversion helpers
++ */
++static int slirp_poll_to_gio(int events)
++{
++    int ret = 0;
++    if (events & SLIRP_POLL_IN)  ret |= G_IO_IN;
++    if (events & SLIRP_POLL_OUT) ret |= G_IO_OUT;
++    if (events & SLIRP_POLL_PRI) ret |= G_IO_PRI;
++    if (events & SLIRP_POLL_ERR) ret |= G_IO_ERR;
++    if (events & SLIRP_POLL_HUP) ret |= G_IO_HUP;
++    return ret;
++}
++
++static int net_slirp_add_poll(slirp_os_socket fd, int events, void *opaque)
++{
++    GArray *pollfds = opaque;
++    GPollFD pfd = {
++        .fd = fd,
++        .events = slirp_poll_to_gio(events),
++    };
++    int idx = pollfds->len;
++    g_array_append_val(pollfds, pfd);
++    return idx;
++}
++
++static int slirp_gio_to_poll(int events)
++{
++    int ret = 0;
++    if (events & G_IO_IN)  ret |= SLIRP_POLL_IN;
++    if (events & G_IO_OUT) ret |= SLIRP_POLL_OUT;
++    if (events & G_IO_PRI) ret |= SLIRP_POLL_PRI;
++    if (events & G_IO_ERR) ret |= SLIRP_POLL_ERR;
++    if (events & G_IO_HUP) ret |= SLIRP_POLL_HUP;
++    return ret;
++}
++
++static int net_slirp_get_revents(int idx, void *opaque)
++{
++    GArray *pollfds = opaque;
++    return slirp_gio_to_poll(g_array_index(pollfds, GPollFD, idx).revents);
++}
++
++/*
++ * Main loop poll notifier - integrates slirp with QEMU's event loop
++ */
++static Notifier uae_slirp_poll_notifier;
++
++static void uae_slirp_poll_notify(Notifier *notifier, void *data)
++{
++    MainLoopPoll *poll = data;
++
++    if (slirp == NULL) {
++        return;
++    }
++
++    switch (poll->state) {
++    case MAIN_LOOP_POLL_FILL:
++        slirp_pollfds_fill_socket(slirp, &poll->timeout,
++                                  net_slirp_add_poll, poll->pollfds);
++        break;
++    case MAIN_LOOP_POLL_OK:
++    case MAIN_LOOP_POLL_ERR:
++        slirp_pollfds_poll(slirp, poll->state == MAIN_LOOP_POLL_ERR,
++                           net_slirp_get_revents, poll->pollfds);
++        break;
++    default:
++        break;
++    }
++}
++
++/*
++ * Initialize slirp with a default network configuration matching
++ * the original qemu-uae settings.
++ *
++ * Network: 10.0.2.0/24
++ *   Host:  10.0.2.2
++ *   DNS:   10.0.2.3
++ *   DHCP:  10.0.2.15
++ */
+ void qemu_uae_slirp_init(void)
+ {
++    SlirpConfig cfg = { 0 };
++
+     uae_log("QEMU: Initializing Slirp\n");
+ 
+-    /* Note: slirp_init API has changed in modern libslirp.
+-     * This needs to be adapted for the new API. */
+-    uae_log("QEMU: Slirp initialization not yet implemented for modern QEMU\n");
++#if SLIRP_CHECK_VERSION(4, 9, 0)
++    cfg.version = 6;
++#elif SLIRP_CHECK_VERSION(4, 7, 0)
++    cfg.version = 4;
++#else
++    cfg.version = 1;
++#endif
++    cfg.restricted = 0;
++    cfg.in_enabled = true;
++    cfg.vnetwork.s_addr     = htonl(0x0a000200); /* 10.0.2.0 */
++    cfg.vnetmask.s_addr     = htonl(0xffffff00); /* 255.255.255.0 */
++    cfg.vhost.s_addr        = htonl(0x0a000202); /* 10.0.2.2 */
++    cfg.vdhcp_start.s_addr  = htonl(0x0a00020f); /* 10.0.2.15 */
++    cfg.vnameserver.s_addr  = htonl(0x0a000203); /* 10.0.2.3 */
++
++    slirp = slirp_new(&cfg, &uae_slirp_cb, NULL);
++    if (slirp == NULL) {
++        uae_log("QEMU: Failed to create slirp instance\n");
++        return;
++    }
++
++    /* Register poll notifier so slirp sockets are serviced in the main loop */
++    uae_slirp_poll_notifier.notify = uae_slirp_poll_notify;
++    main_loop_poll_add_notifier(&uae_slirp_poll_notifier);
++
++    uae_log("QEMU: Slirp initialized (network 10.0.2.0/24)\n");
+ }
+ 
++/*
++ * Feed a packet from the UAE guest into slirp
++ */
+ void qemu_uae_slirp_input(const uint8_t *pkt, int pkt_len)
+ {
+-    uae_log("QEMU: qemu_uae_slirp_input pkt_len %d\n", pkt_len);
+     if (slirp == NULL) {
+         return;
+     }
+@@ -67,13 +327,3 @@ void qemu_uae_slirp_input(const uint8_t *pkt, int pkt_len)
+ }
+ 
+ #endif /* CONFIG_SLIRP */
+-
+-/* This function is called by slirp when it has data to send */
+-void slirp_output(void *opaque, const uint8_t *pkt, int pkt_len)
+-{
+-    uae_log("QEMU: slirp_output pkt_len %d\n", pkt_len);
+-    if (uae_slirp_output == NULL) {
+-        return;
+-    }
+-    uae_slirp_output(pkt, pkt_len);
+-}
+-- 
+2.50.1 (Apple Git-155)
+

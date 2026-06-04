@@ -1,0 +1,174 @@
+From e8fad5544da8967b6f1b9c2624afdc3d8450bb7c Mon Sep 17 00:00:00 2001
+From: Stefan <stefan.reinauer@coreboot.org>
+Date: Sun, 18 Jan 2026 14:55:53 -0800
+Subject: [PATCH 6/7] docs: add QEMU-UAE README
+
+Document the QEMU-UAE plugin purpose, build steps, exported API, and
+source layout.
+
+Describe this tree as the QEMU 11.0 port of the original QEMU-UAE
+work.
+---
+ README.md | 150 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 150 insertions(+)
+ create mode 100644 README.md
+
+diff --git a/README.md b/README.md
+new file mode 100644
+index 000000000..bb8e4f478
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,150 @@
++# QEMU-UAE
++
++QEMU-UAE is a port of QEMU that builds as a shared library plugin for WinUAE and FS-UAE. It provides PowerPC CPU emulation for Amiga PPC accelerator cards like the CyberStorm PPC and Blizzard PPC.
++
++This version is based on **QEMU 11.0** and is a port of the original [qemu-uae](https://github.com/frode-solheim/qemu-uae) project by Frode Solheim, which was based on QEMU 2.2.
++
++## Building
++
++### Prerequisites
++
++Standard QEMU build dependencies are required. On Debian/Ubuntu:
++
++```sh
++sudo apt-get install build-essential ninja-build python3 python3-venv \
++    pkg-config libglib2.0-dev libpixman-1-dev zlib1g-dev
++```
++
++### Build Instructions
++
++```sh
++# Configure for UAE plugin build
++./configure-qemu-uae
++
++# Build
++cd build
++ninja
++```
++
++The shared library will be created at `build/qemu-uae.so`.
++
++### Build Options
++
++The `configure-qemu-uae` script configures QEMU with minimal features required for UAE:
++
++- Target: `ppc-softmmu` only
++- Builds as shared library (`qemu-uae.so`) instead of executable
++- Disables unnecessary features (SDL, GTK, VNC, KVM, etc.)
++
++Debug options can be enabled by uncommenting lines in `configure-qemu-uae`:
++
++```sh
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DDEBUG_DISAS"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DPPC_DEBUG_DISAS"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DPPC_DEBUG_IRQ"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DPPC_DEBUG_TB"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DDEBUG_MMU"
++```
++
++## Usage
++
++The `qemu-uae.so` library is loaded by WinUAE or FS-UAE to provide PPC emulation. It is typically installed via the [fs-uae-plugin-qemu-uae](https://github.com/FrodeSolheim/fs-uae-plugin-qemu-uae) project.
++
++### Installation for FS-UAE
++
++Copy `qemu-uae.so` to:
++```
++~/.local/lib/fs-uae/plugins/qemu-uae/<version>/qemu-uae.so
++```
++
++Or use the fs-uae-plugin-qemu-uae build system for proper installation.
++
++## API
++
++The library exports the following functions for UAE integration:
++
++### Initialization
++
++- `qemu_uae_init()` - Initialize QEMU subsystems
++- `qemu_uae_start()` - Start the QEMU main loop thread
++- `qemu_uae_version(int *major, int *minor, int *revision)` - Get API version
++
++### PPC CPU Control
++
++- `ppc_cpu_init(const char *model, uint32_t hid1)` - Initialize PPC CPU
++  - Supported models: `603ev`, `604e`
++- `ppc_cpu_reset()` - Reset the CPU
++- `ppc_cpu_run_continuous()` - Run the CPU main loop
++- `ppc_cpu_set_state(int state)` - Pause/resume CPU
++  - `PPC_CPU_STATE_PAUSED` = 0
++  - `PPC_CPU_STATE_RUNNING` = 1
++
++### Memory Mapping
++
++- `ppc_cpu_map_memory(PPCMemoryRegion *regions, int count)` - Map memory regions
++  - Pass `count >= 0` to replace all regions
++  - Pass `count = -1` to add/modify a single region
++
++### Interrupts
++
++- `qemu_uae_ppc_external_interrupt(bool enable)` - Trigger external interrupt
++
++### Locking
++
++- `qemu_uae_lock(int type)` - Lock/unlock for thread synchronization
++  - `QEMU_UAE_LOCK_TRYLOCK` = 0
++  - `QEMU_UAE_LOCK_TRYLOCK_CANCEL` = 1
++  - `QEMU_UAE_LOCK_ACQUIRE` = 2
++  - `QEMU_UAE_LOCK_RELEASE` = 3
++
++### Callbacks (set by UAE)
++
++The UAE emulator must set these callback function pointers:
++
++- `uae_log` - Logging function
++- `uae_ppc_io_mem_read` / `uae_ppc_io_mem_write` - I/O memory access (32-bit)
++- `uae_ppc_io_mem_read64` / `uae_ppc_io_mem_write64` - I/O memory access (64-bit)
++
++## Project Structure
++
++```
++uae/
++├── api.h              - Public API declarations
++├── attributes.h       - Compiler attributes (PPCAPI)
++├── log.h              - Logging macros
++├── ppc.h              - PPC-specific API
++├── qemu.h             - QEMU integration API
++├── qemu-uae.h         - Internal header
++├── types.h            - Type definitions
++├── qemu-uae-cpu.c     - PPC CPU integration
++├── qemu-uae-main.c    - Main initialization
++├── qemu-uae-slirp.c   - Network stubs
++└── meson.build        - Build configuration
++```
++
++## Changes from Upstream QEMU
++
++The following modifications are made to QEMU for UAE support:
++
++- `system/cpus.c` - UAE mutex wrapper functions
++- `system/memory.c` - UAE logging for unassigned memory
++- `system/runstate.c` - UAE main loop integration
++- `target/ppc/translate.c` - Skip invalid bits check (CSPPC compatibility)
++- `meson.build` - Shared library build support
++- `meson_options.txt` - `qemu_uae` build option
++
++## Version History
++
++- **3.8.2** - QEMU 11.0 port (this version)
++- **3.6.x** - Original QEMU 2.2 based version by Frode Solheim
++
++## Credits
++
++- Original QEMU-UAE implementation by [Frode Solheim](https://github.com/FrodeSolheim)
++- QEMU project: https://www.qemu.org/
++- WinUAE: https://www.winuae.net/
++- FS-UAE: https://fs-uae.net/
++
++## License
++
++This project is licensed under the GNU Lesser General Public License v2.1 or later (LGPL-2.1+), consistent with the original QEMU-UAE and QEMU licensing.
+-- 
+2.50.1 (Apple Git-155)
+

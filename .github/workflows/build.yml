@@ -1,0 +1,44 @@
+name: Build qemu-uae
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            curl \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-venv \
+            libglib2.0-dev \
+            libpixman-1-dev \
+            libslirp-dev \
+            zlib1g-dev
+
+      - name: Check script syntax
+        run: bash -n build-qemu-uae-plugin.sh
+
+      - name: Build plugin
+        run: ./build-qemu-uae-plugin.sh --clean -j "$(nproc)" --output dist/qemu-uae.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-uae-linux-x86_64
+          path: dist/qemu-uae.so
+          if-no-files-found: error

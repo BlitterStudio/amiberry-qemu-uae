@@ -1,0 +1,262 @@
+From 0b824118a17bca81f564fcb09362658896ebdf21 Mon Sep 17 00:00:00 2001
+From: Stefan Reinauer <stefan.reinauer@coreboot.org>
+Date: Wed, 27 May 2026 21:39:07 -0700
+Subject: [PATCH 4/7] meson: build lean QEMU-UAE shared library
+
+Add the qemu_uae Meson option and configure wrapper used to build
+QEMU as a WinUAE and FS-UAE PPC plugin shared library.
+
+Build qemu-uae.so for the PPC target, request static PIC support,
+limit exported symbols to the host ABI, and disable unrelated tools,
+UI, audio, block, network, smartcard, RDMA, and host-library backends.
+---
+ configure-qemu-uae        | 97 +++++++++++++++++++++++++++++++++++++++
+ meson.build               | 32 +++++++++++++
+ meson_options.txt         |  2 +
+ uae/qemu-uae-ld64.symbols | 20 ++++++++
+ uae/qemu-uae-main.c       |  2 -
+ uae/qemu-uae.symbols      | 25 ++++++++++
+ 6 files changed, 176 insertions(+), 2 deletions(-)
+ create mode 100755 configure-qemu-uae
+ create mode 100644 uae/qemu-uae-ld64.symbols
+ create mode 100644 uae/qemu-uae.symbols
+
+diff --git a/configure-qemu-uae b/configure-qemu-uae
+new file mode 100755
+index 000000000..346576135
+--- /dev/null
++++ b/configure-qemu-uae
+@@ -0,0 +1,97 @@
++#!/bin/sh -e
++#
++# Configure script for building QEMU-UAE plugin
++#
++
++# Note: QEMU_UAE is now defined via meson's -Dqemu_uae=true option
++EXTRA_CFLAGS="-DDEBUG_UNASSIGNED"
++
++# Optional debug flags (uncomment as needed):
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DDEBUG_DISAS"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DPPC_DEBUG_DISAS"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DPPC_DEBUG_IRQ"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DPPC_DEBUG_TB"
++# EXTRA_CFLAGS="$EXTRA_CFLAGS -DDEBUG_MMU"
++
++OS_NAME=$(uname -s)
++case $OS_NAME in
++MINGW*|MSYS*)
++    export CC=gcc
++    export CXX=g++
++    ;;
++*)
++    EXTRA_CFLAGS="$EXTRA_CFLAGS -fPIC"
++    ;;
++esac
++
++# Run meson-based configure with minimal features for UAE
++./configure \
++    --target-list=ppc-softmmu \
++    --extra-cflags="$EXTRA_CFLAGS" \
++    -Dqemu_uae=true \
++    -Db_staticpic=true \
++    --disable-werror \
++    --disable-strip \
++    --disable-tools \
++    --disable-docs \
++    --disable-sdl \
++    --disable-gtk \
++    --disable-cocoa \
++    --disable-vnc \
++    --disable-dbus-display \
++    --disable-pvg \
++    --disable-coreaudio \
++    --audio-drv-list= \
++    --disable-auth-pam \
++    --disable-attr \
++    --disable-bzip2 \
++    --disable-cap-ng \
++    --disable-curl \
++    --disable-fuse \
++    --disable-gio \
++    --disable-gcrypt \
++    --disable-gnutls \
++    --disable-hv-balloon \
++    --disable-libiscsi \
++    --disable-libnfs \
++    --disable-libssh \
++    --disable-nettle \
++    --disable-png \
++    --disable-pixman \
++    --disable-vmnet \
++    --disable-vde \
++    --disable-netmap \
++    --disable-zstd \
++    --disable-virtfs \
++    --disable-xen \
++    --disable-brlapi \
++    --disable-curses \
++    --disable-kvm \
++    --disable-user \
++    --disable-vhost-net \
++    --disable-spice \
++    --disable-tpm \
++    --disable-libusb \
++    --disable-lzo \
++    --disable-snappy \
++    --disable-guest-agent \
++    --disable-linux-aio \
++    --disable-seccomp \
++    --disable-glusterfs \
++    --disable-capstone \
++    --disable-numa \
++    --disable-rdma \
++    --disable-smartcard \
++    --disable-pie \
++    --disable-vvfat \
++    --disable-qed \
++    --disable-parallels \
++    --disable-bochs \
++    --disable-cloop \
++    --disable-dmg \
++    --disable-qcow1 \
++    --disable-vdi \
++    --disable-vhdx \
++    --disable-vmdk \
++    --disable-vpc \
++    "$@"
+diff --git a/meson.build b/meson.build
+index 94feda2eb..8b0145c76 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2446,6 +2446,7 @@ config_host_data.set('CONFIG_COCOA', cocoa.found())
+ config_host_data.set('CONFIG_DARWIN', host_os == 'darwin')
+ config_host_data.set('CONFIG_FDT', fdt.found())
+ config_host_data.set('CONFIG_FUZZ', get_option('fuzzing'))
++config_host_data.set('QEMU_UAE', get_option('qemu_uae'))
+ config_host_data.set('CONFIG_GCOV', get_option('b_coverage'))
+ config_host_data.set('CONFIG_LIBUDEV', libudev.found())
+ config_host_data.set('CONFIG_LINUX', host_os == 'linux')
+@@ -4441,6 +4442,37 @@ foreach target : target_dirs
+       exe_name += '-unsigned'
+     endif
+ 
++    # Build shared library for QEMU-UAE plugin instead of executable
++    if get_option('qemu_uae') and target_name == 'ppc'
++      qemu_uae_link_args = []
++      qemu_uae_link_depends = [block_syms, qemu_syms]
++      if host_os == 'darwin'
++        qemu_uae_exports = files('uae/qemu-uae-ld64.symbols')
++        qemu_uae_link_depends += qemu_uae_exports
++        qemu_uae_link_args += ['-Wl,-exported_symbols_list,'
++                               + qemu_uae_exports[0].full_path()]
++      elif host_os != 'windows'
++        qemu_uae_exports = files('uae/qemu-uae.symbols')
++        qemu_uae_link_depends += qemu_uae_exports
++        qemu_uae_link_args += ['-Wl,--version-script='
++                               + qemu_uae_exports[0].full_path()]
++      endif
++      emulator = shared_library('qemu-uae',
++                 install: true,
++                 c_args: c_args,
++                 dependencies: arch_deps + exe['dependencies'],
++                 objects: lib.extract_all_objects(recursive: true),
++                 link_depends: qemu_uae_link_depends,
++                 link_args: qemu_uae_link_args,
++                 name_prefix: '',
++                 name_suffix: 'so')
++      emulators += {'qemu-uae': emulator}
++      # Also add qemu-system-ppc alias for test compatibility
++      emulators += {'qemu-system-ppc': emulator}
++      # Skip the rest of the loop for UAE builds
++      continue
++    endif
++
+     emulator = executable(exe_name, exe['sources'],
+                install: true,
+                c_args: c_args,
+diff --git a/meson_options.txt b/meson_options.txt
+index 31d5916cf..2a368d77f 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -47,6 +47,8 @@ option('docs', type : 'feature', value : 'auto',
+        description: 'Documentations build support')
+ option('fuzzing', type : 'boolean', value: false,
+        description: 'build fuzzing targets')
++option('qemu_uae', type : 'boolean', value: false,
++       description: 'build QEMU-UAE shared library plugin for WinUAE/FS-UAE')
+ option('gettext', type : 'feature', value : 'auto',
+        description: 'Localization of the GTK+ user interface')
+ option('modules', type : 'feature', value : 'disabled',
+diff --git a/uae/qemu-uae-ld64.symbols b/uae/qemu-uae-ld64.symbols
+new file mode 100644
+index 000000000..4a82508d7
+--- /dev/null
++++ b/uae/qemu-uae-ld64.symbols
+@@ -0,0 +1,20 @@
++_ppc_cpu_init
++_ppc_cpu_map_memory
++_ppc_cpu_reset
++_ppc_cpu_run_continuous
++_ppc_cpu_set_state
++_qemu_uae_init
++_qemu_uae_lock
++_qemu_uae_ppc_external_interrupt
++_qemu_uae_ppc_in_cpu_thread
++_qemu_uae_ppc_init
++_qemu_uae_slirp_init
++_qemu_uae_slirp_input
++_qemu_uae_start
++_qemu_uae_version
++_uae_log
++_uae_ppc_io_mem_read
++_uae_ppc_io_mem_read64
++_uae_ppc_io_mem_write
++_uae_ppc_io_mem_write64
++_uae_slirp_output
+diff --git a/uae/qemu-uae-main.c b/uae/qemu-uae-main.c
+index 74f68e816..ebe0543ad 100644
+--- a/uae/qemu-uae-main.c
++++ b/uae/qemu-uae-main.c
+@@ -108,8 +108,6 @@ static bool initialize(void)
+     /* Lock BQL */
+     qemu_uae_mutex_lock();
+ 
+-    qemu_thread_naming(true);
+-
+     qemu_uae_mutex_unlock();
+     return true;
+ }
+diff --git a/uae/qemu-uae.symbols b/uae/qemu-uae.symbols
+new file mode 100644
+index 000000000..c15ee3eb5
+--- /dev/null
++++ b/uae/qemu-uae.symbols
+@@ -0,0 +1,25 @@
++{
++  global:
++    ppc_cpu_init;
++    ppc_cpu_map_memory;
++    ppc_cpu_reset;
++    ppc_cpu_run_continuous;
++    ppc_cpu_set_state;
++    qemu_uae_init;
++    qemu_uae_lock;
++    qemu_uae_ppc_external_interrupt;
++    qemu_uae_ppc_in_cpu_thread;
++    qemu_uae_ppc_init;
++    qemu_uae_slirp_init;
++    qemu_uae_slirp_input;
++    qemu_uae_start;
++    qemu_uae_version;
++    uae_log;
++    uae_ppc_io_mem_read;
++    uae_ppc_io_mem_read64;
++    uae_ppc_io_mem_write;
++    uae_ppc_io_mem_write64;
++    uae_slirp_output;
++  local:
++    *;
++};
+-- 
+2.50.1 (Apple Git-155)
+

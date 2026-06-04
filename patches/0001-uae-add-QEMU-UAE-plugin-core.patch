@@ -1,0 +1,1482 @@
+From e5d79f8e04c7ed40ddc0e2ed0a215bc5d9fa841e Mon Sep 17 00:00:00 2001
+From: Stefan Reinauer <stefan.reinauer@coreboot.org>
+Date: Wed, 27 May 2026 21:37:19 -0700
+Subject: [PATCH 1/7] uae: add QEMU-UAE plugin core
+
+Add the QEMU-UAE headers, PPC CPU shim, startup path, slirp stubs,
+and internal helper declarations needed by the plugin tree.
+
+Wire the UAE sources into the QEMU 11.0 PPC softmmu build and add
+the QEMU-side hooks used by the host emulator to synchronize with
+CPU execution and drive the exported main loop.
+---
+ meson.build            |   1 +
+ system/cpus.c          |  64 +++++++
+ system/runstate.c      |  17 ++
+ target/ppc/meson.build |   4 +
+ uae/api.h              | 103 +++++++++++
+ uae/attributes.h       |  34 ++++
+ uae/log.h              | 101 +++++++++++
+ uae/meson.build        |   6 +
+ uae/ppc.h              | 140 ++++++++++++++
+ uae/qemu-uae-cpu.c     | 401 +++++++++++++++++++++++++++++++++++++++++
+ uae/qemu-uae-main.c    | 167 +++++++++++++++++
+ uae/qemu-uae-slirp.c   |  79 ++++++++
+ uae/qemu-uae.h         |  30 +++
+ uae/qemu.h             |  70 +++++++
+ uae/types.h            |  92 ++++++++++
+ 15 files changed, 1309 insertions(+)
+ create mode 100644 uae/api.h
+ create mode 100644 uae/attributes.h
+ create mode 100644 uae/log.h
+ create mode 100644 uae/meson.build
+ create mode 100644 uae/ppc.h
+ create mode 100644 uae/qemu-uae-cpu.c
+ create mode 100644 uae/qemu-uae-main.c
+ create mode 100644 uae/qemu-uae-slirp.c
+ create mode 100644 uae/qemu-uae.h
+ create mode 100644 uae/qemu.h
+ create mode 100644 uae/types.h
+
+diff --git a/meson.build b/meson.build
+index ab3e97eb9..94feda2eb 100644
+--- a/meson.build
++++ b/meson.build
+@@ -3846,6 +3846,7 @@ user_ss.add(files('cpu-target.c'))
+ system_ss.add(files('cpu-target.c'))
+ 
+ subdir('system')
++subdir('uae')
+ 
+ # Work around a gcc bug/misfeature wherein constant propagation looks
+ # through an alias:
+diff --git a/system/cpus.c b/system/cpus.c
+index bded87feb..99b970ade 100644
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -48,6 +48,10 @@
+ #include "hw/core/hw-error.h"
+ #include "trace.h"
+ 
++#ifdef QEMU_UAE
++#include "uae/qemu-uae.h"
++#endif
++
+ #ifdef CONFIG_LINUX
+ 
+ #include <sys/prctl.h>
+@@ -590,6 +594,66 @@ void qemu_cond_wait_bql(QemuCond *cond)
+     qemu_cond_wait(cond, &bql);
+ }
+ 
++#ifdef QEMU_UAE
++/*
++ * UAE mutex wrapper functions
++ * These provide the locking interface expected by the UAE PPC plugin
++ */
++
++static QemuCond qemu_uae_proceeded_cond;
++static bool uae_requesting_mutex;
++static bool uae_trylock_status;
++static bool qemu_uae_cond_initialized;
++
++static void qemu_uae_ensure_cond_init(void)
++{
++    if (!qemu_uae_cond_initialized) {
++        qemu_cond_init(&qemu_uae_proceeded_cond);
++        qemu_uae_cond_initialized = true;
++    }
++}
++
++void qemu_uae_mutex_lock(void)
++{
++    qemu_uae_ensure_cond_init();
++    bql_lock();
++}
++
++void qemu_uae_mutex_unlock(void)
++{
++    bql_unlock();
++}
++
++int qemu_uae_mutex_trylock(void)
++{
++    CPUState *first_cpu_local = first_cpu;
++
++    qemu_uae_ensure_cond_init();
++    uae_requesting_mutex = true;
++    int result = qemu_mutex_trylock(&bql);
++    if (result) {
++        /* Lock was not acquired */
++        if (uae_trylock_status == false && first_cpu_local) {
++            qemu_cpu_kick(first_cpu_local);
++            uae_trylock_status = true;
++        }
++    } else {
++        /* Lock acquired */
++        set_bql_locked(true);
++        uae_trylock_status = false;
++        uae_requesting_mutex = false;
++        qemu_cond_broadcast(&qemu_uae_proceeded_cond);
++    }
++    return result;
++}
++
++void qemu_uae_mutex_trylock_cancel(void)
++{
++    uae_requesting_mutex = false;
++    uae_trylock_status = false;
++}
++#endif /* QEMU_UAE */
++
+ void qemu_cond_timedwait_bql(QemuCond *cond, int ms)
+ {
+     qemu_cond_timedwait(cond, &bql, ms);
+diff --git a/system/runstate.c b/system/runstate.c
+index 2d4e95a21..48f427f23 100644
+--- a/system/runstate.c
++++ b/system/runstate.c
+@@ -63,6 +63,10 @@
+ #include "system/tpm.h"
+ #include "trace.h"
+ 
++#ifdef QEMU_UAE
++#include "uae/qemu-uae.h"
++#endif
++
+ static NotifierList exit_notifiers =
+     NOTIFIER_LIST_INITIALIZER(exit_notifiers);
+ 
+@@ -942,12 +946,25 @@ int qemu_main_loop(void)
+     int status = EXIT_SUCCESS;
+ 
+     while (!main_loop_should_exit(&status)) {
++#ifdef QEMU_UAE
++        if (qemu_uae_main_loop_should_exit()) {
++            break;
++        }
++#endif
+         main_loop_wait(false);
+     }
+ 
+     return status;
+ }
+ 
++#ifdef QEMU_UAE
++/* Export main_loop function for UAE */
++void main_loop(void)
++{
++    qemu_main_loop();
++}
++#endif
++
+ void qemu_add_exit_notifier(Notifier *notify)
+ {
+     notifier_list_add(&exit_notifiers, notify);
+diff --git a/target/ppc/meson.build b/target/ppc/meson.build
+index d4ebbaf0a..fb22c4f5d 100644
+--- a/target/ppc/meson.build
++++ b/target/ppc/meson.build
+@@ -60,6 +60,10 @@ ppc_system_ss.add(when: 'TARGET_PPC64', if_true: files(
+   'mmu-radix64.c',
+ ))
+ 
++ppc_system_ss.add(files(
++  meson.project_source_root() / 'uae' / 'qemu-uae-cpu.c',
++))
++
+ target_arch += {'ppc': ppc_ss}
+ target_user_arch += {'ppc': ppc_user_ss}
+ target_system_arch += {'ppc': ppc_system_ss}
+diff --git a/uae/api.h b/uae/api.h
+new file mode 100644
+index 000000000..fdbc4acb5
+--- /dev/null
++++ b/uae/api.h
+@@ -0,0 +1,103 @@
++/*
++ * Helpers used to export UAE functions for use with other modules
++ * Copyright (C) 2014 Frode Solheim
++ *
++ * Licensed under the terms of the GNU General Public License version 2.
++ * See the file 'COPYING' for full license text.
++ */
++
++#ifndef UAE_API_H
++#define UAE_API_H
++
++/* This file is intended to be included by external libraries as well,
++ * so don't pull in too much UAE-specific stuff. */
++
++#include "uae/attributes.h"
++
++/* Handy define so we can disable C++ name mangling without considering
++ * whether the source language is C or C++. */
++
++#ifdef __cplusplus
++#define UAE_EXTERN_C extern "C"
++#else
++#define UAE_EXTERN_C
++#endif
++
++/* UAE_EXPORT / UAE_IMPORT are mainly intended as helpers for UAEAPI
++ * defined below. */
++
++#ifdef _WIN32
++#define UAE_EXPORT __declspec(dllexport)
++#define UAE_IMPORT __declspec(dllimport)
++#else
++#define UAE_EXPORT __attribute__((visibility("default")))
++#define UAE_IMPORT
++#endif
++
++/* UAEAPI marks a function for export across library boundaries. You'll
++ * likely want to use this together with UAECALL. */
++
++#ifdef UAE
++#define UAEAPI UAE_EXTERN_C UAE_EXPORT
++#else
++#define UAEAPI UAE_EXTERN_C UAE_IMPORT
++#endif
++
++/* WinUAE (or external libs) might be compiled with fastcall by default,
++ * so we force all external functions to use cdecl calling convention. */
++
++#define UAECALL uae_cdecl
++
++/* Helpers to make it easy to import functions from plugins. */
++
++#ifdef UAE
++
++#define UAE_DECLARE_IMPORT_FUNCTION(return_type, function_name, ...) \
++	typedef return_type (UAECALL * function_name ## _function)(__VA_ARGS__); \
++	extern function_name ## _function function_name;
++
++#define UAE_IMPORT_FUNCTION(handle, function_name) \
++{ \
++	function_name = (function_name ## _function) uae_dlsym( \
++		handle, #function_name); \
++	if (function_name) { \
++		write_log("Imported " #function_name "\n"); \
++	} else { \
++		write_log("WARNING: Could not import " #function_name "\n"); \
++	} \
++}
++
++#define UAE_DECLARE_EXPORT_FUNCTION(return_type, function_name, ...) \
++	typedef return_type (UAECALL * function_name ## _function)(__VA_ARGS__); \
++	return_type UAECALL function_name(__VA_ARGS__);
++
++#define UAE_EXPORT_FUNCTION(handle, function_name) \
++{ \
++	void *ptr = uae_dlsym(handle, #function_name); \
++	if (ptr) { \
++		*((function_name ## _function *) ptr) = function_name; \
++		write_log("Exported " #function_name "\n"); \
++	} else { \
++		write_log("WARNING: Could not export " #function_name "\n"); \
++	} \
++}
++
++#else
++
++#define UAE_DECLARE_IMPORT_FUNCTION(return_type, function_name, ...) \
++	return_type UAECALL function_name(__VA_ARGS__);
++
++#define UAE_DECLARE_EXPORT_FUNCTION(return_type, function_name, ...) \
++	typedef return_type (UAECALL * function_name ## _function)(__VA_ARGS__); \
++	extern function_name ## _function function_name;
++
++#endif
++
++/**
++ * Used in both UAE and plugin code to define storage for the function
++ * imported from the other module.
++ */
++#define UAE_DEFINE_IMPORT_FUNCTION(function_name) \
++    function_name ## _function function_name = NULL;
++
++#endif /* UAE_API_H */
+diff --git a/uae/attributes.h b/uae/attributes.h
+new file mode 100644
+index 000000000..584aa22e7
+--- /dev/null
++++ b/uae/attributes.h
+@@ -0,0 +1,34 @@
++/*
++ * Defines useful functions and variable attributes for UAE
++ * Copyright (C) 2014 Frode Solheim
++ *
++ * Licensed under the terms of the GNU General Public License version 2.
++ * See the file 'COPYING' for full license text.
++ */
++
++#ifndef UAE_ATTRIBUTES_H
++#define UAE_ATTRIBUTES_H
++
++/* This file is intended to be included by external libraries as well,
++ * so don't pull in too much UAE-specific stuff. */
++
++#ifdef _WIN32
++#define uae_cdecl __cdecl
++#elif defined(__GNUC__) && defined(__i386__)
++#define uae_cdecl __attribute__((cdecl))
++#else
++#define uae_cdecl
++#endif
++
++/* This attribute allows (some) compiles to emit warnings when incorrect
++ * arguments are used with the format string. */
++
++#ifdef __GNUC__
++#define UAE_PRINTF_FORMAT(f, a) __attribute__((format(printf, f, a)))
++#else
++#define UAE_PRINTF_FORMAT(f, a)
++#endif
++
++#define UAE_WPRINTF_FORMAT(f, a)
++
++#endif /* UAE_ATTRIBUTES_H */
+diff --git a/uae/log.h b/uae/log.h
+new file mode 100644
+index 000000000..83b7a0fd7
+--- /dev/null
++++ b/uae/log.h
+@@ -0,0 +1,101 @@
++/*
++ * Logging functions for use with UAE and external modules
++ * Copyright (C) 2014 Frode Solheim
++ *
++ * Licensed under the terms of the GNU General Public License version 2.
++ * See the file 'COPYING' for full license text.
++ */
++
++#ifndef UAE_LOG_H
++#define UAE_LOG_H
++
++/* This file is intended to be included by external libraries as well,
++ * so don't pull in too much UAE-specific stuff. */
++
++#include "uae/api.h"
++#include "uae/attributes.h"
++#include "uae/types.h"
++
++typedef void (UAECALL *uae_log_function)(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
++#ifdef UAE
++//UAEAPI void UAECALL uae_log(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
++void UAECALL uae_log(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
++#else
++extern uae_log_function uae_log;
++#endif
++
++#ifdef FSUAE // NL
++void UAECALL uae_log_reset_timestamp(void);
++#endif
++
++#if 0
++void uae_warning(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
++void uae_error(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
++void uae_fatal(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
++#endif
++
++#define UAE_LOG_VA_ARGS(format, ap) \
++{ \
++	char buffer[1024]; \
++	vsnprintf(buffer, 1024, format, ap); \
++	uae_log("%s", buffer); \
++}
++
++#define UAE_LOG_VA_ARGS_FULL(format) \
++{ \
++	va_list ap; \
++	va_start(ap, format); \
++	UAE_LOG_VA_ARGS(format, ap); \
++	va_end(ap); \
++}
++
++/* Helpers to log use of stubbed functions */
++
++#ifdef _MSC_VER
++#define __func__ __FUNCTION__
++#endif
++
++#define UAE_LOG_STUB(format, ...) \
++{ \
++	uae_log(" -- stub -- %s " format "\n", __func__, ##__VA_ARGS__); \
++}
++
++#define UAE_LOG_STUB_MAX(max, format, ...) \
++{ \
++	static int log_stub_count = 0; \
++	if (log_stub_count < max) { \
++		LOG_STUB(format, ##__VA_ARGS__) \
++		if (++log_stub_count == max) { \
++			uae_log("(Will not log further calls to %s)\n", __func__); \
++		} \
++	} \
++}
++
++#define UAE_LOG_STUB_ONCE(format, ...) \
++	UAE_LOG_STUB_MAX(1, format, , ##__VA_ARGS__)
++
++/* UAE-specific functions */
++
++#ifdef UAE
++
++void write_log (const char *, ...) UAE_PRINTF_FORMAT(1, 2);
++void write_logx(const char *, ...);
++#if SIZEOF_TCHAR != 1
++void write_log (const TCHAR *, ...) UAE_WPRINTF_FORMAT(1, 2);
++void write_logx(const TCHAR *, ...);
++#endif
++
++#endif
++
++/* Deprecated defines */
++
++#ifdef UAE
++
++#define STUB UAE_LOG_STUB
++#define LOG_STUB UAE_LOG_STUB
++#define LOG_STUB_MAX UAE_LOG_STUB_MAX
++#define VERBOSE_STUB STUB
++
++#endif
++
++#endif /* UAE_LOG_H */
+diff --git a/uae/meson.build b/uae/meson.build
+new file mode 100644
+index 000000000..890b0340f
+--- /dev/null
++++ b/uae/meson.build
+@@ -0,0 +1,6 @@
++# UAE plugin support
++
++system_ss.add(files(
++  'qemu-uae-main.c',
++  'qemu-uae-slirp.c',
++))
+diff --git a/uae/ppc.h b/uae/ppc.h
+new file mode 100644
+index 000000000..2e23b00ae
+--- /dev/null
++++ b/uae/ppc.h
+@@ -0,0 +1,140 @@
++/*
++ * Platform-independent loadable module functions for UAE
++ * Copyright (C) 2014 Toni Wilen, Frode Solheim
++ *
++ * Licensed under the terms of the GNU General Public License version 2.
++ * See the file 'COPYING' for full license text.
++ */
++
++#ifndef UAE_PPC_H
++#define UAE_PPC_H
++
++/* This file is intended to be included by external libraries as well,
++ * so don't pull in too much UAE-specific stuff. */
++
++#include "uae/api.h"
++#include "uae/types.h"
++
++#ifdef UAE
++#define PPCAPI UAE_EXTERN_C UAE_IMPORT
++#else
++#define PPCAPI UAE_EXTERN_C UAE_EXPORT
++#endif
++#define PPCCALL UAECALL
++
++/* UAE PPC functions and variables only visible to UAE */
++
++#ifdef UAE
++
++void uae_ppc_get_model(const TCHAR **model, uint32_t *hid1);
++
++void uae_ppc_doze(void);
++void uae_ppc_crash(void);
++void uae_ppc_cpu_reboot(void);
++void uae_ppc_cpu_stop(void);
++bool uae_ppc_poll_queue(void);
++void uae_ppc_interrupt(bool active);
++void uae_ppc_cpu_lock(void);
++bool uae_ppc_cpu_unlock(void);
++void uae_ppc_emulate(void);
++void uae_ppc_reset(bool hardreset);
++void uae_ppc_free(void);
++void uae_ppc_hsync_handler(void);
++void uae_ppc_wakeup(void);
++void ppc_map_banks(uae_u32, uae_u32, const TCHAR*, void*, bool);
++void ppc_remap_bank(uae_u32 start, uae_u32 size, const TCHAR *name, void *addr);
++bool uae_self_is_ppc(void);
++void uae_ppc_wakeup_main(void);
++
++void uae_ppc_execute_quick(void);
++void uae_ppc_execute_check(void);
++void uae_ppc_spinlock_reset(void);
++void uae_ppc_spinlock_get(void);
++void uae_ppc_spinlock_release(void);
++
++/**
++ * Pauses the PPC emulation (for some implementations). Currently triggers
++ * a simple pause implementation intended only for debugging.
++ * @param pause Whether to pause (1) or not (0).
++ */
++void uae_ppc_pause(int pause);
++
++#ifdef __cplusplus
++bool uae_ppc_direct_physical_memory_handle(uint32_t addr, uint8_t *&ptr);
++#endif
++
++extern volatile int ppc_state;
++extern int ppc_cycle_count;
++
++#endif /* UAE */
++
++/* Exported UAE functions which external PPC implementations can use */
++
++typedef bool (UAECALL *uae_ppc_io_mem_read_function)(uint32_t addr, uint32_t *data, int size);
++typedef bool (UAECALL *uae_ppc_io_mem_write_function)(uint32_t addr, uint32_t data, int size);
++typedef bool (UAECALL *uae_ppc_io_mem_read64_function)(uint32_t addr, uint64_t *data);
++typedef bool (UAECALL *uae_ppc_io_mem_write64_function)(uint32_t addr, uint64_t data);
++
++#ifdef UAE
++
++bool UAECALL uae_ppc_io_mem_read(uint32_t addr, uint32_t *data, int size);
++bool UAECALL uae_ppc_io_mem_write(uint32_t addr, uint32_t data, int size);
++bool UAECALL uae_ppc_io_mem_read64(uint32_t addr, uint64_t *data);
++bool UAECALL uae_ppc_io_mem_write64(uint32_t addr, uint64_t data);
++
++#else
++
++extern uae_ppc_io_mem_read_function uae_ppc_io_mem_read;
++extern uae_ppc_io_mem_write_function uae_ppc_io_mem_write;
++extern uae_ppc_io_mem_read64_function uae_ppc_io_mem_read64;
++extern uae_ppc_io_mem_write64_function uae_ppc_io_mem_write64;
++
++#endif
++
++/* Prototypes for PPC CPU implementation, used by PearPC and QEmu */
++
++typedef struct PPCMemoryRegion {
++    uint32_t start;
++    uint32_t size;
++    void *memory;
++    char *name;
++    uint32_t alias;
++} PPCMemoryRegion;
++
++void PPCCALL ppc_cpu_version(int *major, int *minor, int *revision);
++bool PPCCALL ppc_cpu_init(const char *model, uint32_t hid1);
++bool PPCCALL ppc_cpu_init_pvr(uint32_t pvr);
++void PPCCALL ppc_cpu_close(void);
++void PPCCALL ppc_cpu_stop(void);
++void PPCCALL ppc_cpu_atomic_raise_ext_exception(void);
++void PPCCALL ppc_cpu_atomic_cancel_ext_exception(void);
++void PPCCALL ppc_cpu_map_memory(PPCMemoryRegion *regions, int count);
++void PPCCALL ppc_cpu_set_pc(int cpu, uint32_t value);
++void PPCCALL ppc_cpu_run_continuous(void);
++void PPCCALL ppc_cpu_run_single(int count);
++uint64_t PPCCALL ppc_cpu_get_dec(void);
++void PPCCALL ppc_cpu_do_dec(int value);
++void PPCCALL ppc_cpu_pause(int pause);
++void PPCCALL ppc_cpu_reset(void);
++
++#define PPC_CPU_STATE_RUNNING 1
++#define PPC_CPU_STATE_PAUSED 2
++
++//int PPCCALL ppc_cpu_get_state();
++bool PPCCALL ppc_cpu_check_state(int state);
++void PPCCALL ppc_cpu_set_state(int state);
++
++/* Other PPC defines */
++
++#define PPC_IMPLEMENTATION_AUTO 0
++#define PPC_IMPLEMENTATION_DUMMY 1
++#define PPC_IMPLEMENTATION_PEARPC 2
++#define PPC_IMPLEMENTATION_QEMU 3
++
++#define PPC_STATE_INACTIVE 0
++#define PPC_STATE_STOP 1
++#define PPC_STATE_ACTIVE 2
++#define PPC_STATE_SLEEP 3
++#define PPC_STATE_CRASH 4
++
++#endif /* UAE_PPC_H */
+diff --git a/uae/qemu-uae-cpu.c b/uae/qemu-uae-cpu.c
+new file mode 100644
+index 000000000..e4ff7fa04
+--- /dev/null
++++ b/uae/qemu-uae-cpu.c
+@@ -0,0 +1,401 @@
++/*
++ * PowerPC CPU library code for use with UAE
++ * Copyright 2014 Frode Solheim <frode@fs-uae.net>
++ * Adapted for QEMU 11.0 by Stefan Reinauer
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
++ * License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public License
++ * along with this library; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "hw/ppc/ppc.h"
++#include "hw/core/boards.h"
++#include "hw/core/qdev-properties.h"
++#include "system/system.h"
++#include "system/cpus.h"
++#include "system/runstate.h"
++#include "system/cpu-timers.h"
++#include "system/memory.h"
++#include "system/address-spaces.h"
++#include "system/reset.h"
++#include "exec/tb-flush.h"
++#include "cpu.h"
++#include "helper_regs.h"
++#include "qemu-uae.h"
++
++#include "uae/log.h"
++#include "uae/ppc.h"
++#include "uae/qemu.h"
++
++#define BUSFREQ 66000000UL
++#define TBFREQ 16600000UL
++#define MAX_MEMORY_REGIONS 128
++
++static struct {
++    CPUPPCState *env;
++    PowerPCCPU *cpu;
++    int cpu_state;
++    QemuThread pause_thread;
++    uint32_t hid1;
++} state;
++
++static uint64_t indirect_read(void *opaque, hwaddr addr, unsigned size)
++{
++    addr += (uintptr_t) opaque;
++    if (size == 8) {
++        uint64_t retval = 0;
++        uae_ppc_io_mem_read64(addr, &retval);
++        return retval;
++    } else {
++        uint32_t retval = 0;
++        uae_ppc_io_mem_read(addr, &retval, size);
++        return retval;
++    }
++}
++
++static void indirect_write(void *opaque, hwaddr addr, uint64_t data,
++                           unsigned size)
++{
++    addr += (uintptr_t) opaque;
++    if (size == 8) {
++        uae_ppc_io_mem_write64(addr, data);
++    } else {
++        uae_ppc_io_mem_write(addr, data, size);
++    }
++}
++
++static const MemoryRegionOps indirect_ops = {
++    .read = indirect_read,
++    .write = indirect_write,
++    .endianness = DEVICE_BIG_ENDIAN,
++    .valid = {
++        .min_access_size = 1,
++        .max_access_size = 8,
++    },
++    .impl = {
++        .min_access_size = 1,
++        .max_access_size = 8,
++    },
++};
++
++/** Deprecated, use qemu_uae_version instead */
++void PPCAPI ppc_cpu_version(int *major, int *minor, int *revision)
++{
++    return qemu_uae_version(major, minor, revision);
++}
++
++static void qemu_uae_machine_reset(void *opaque)
++{
++    PowerPCCPU *cpu = opaque;
++    cpu_reset(CPU(cpu));
++}
++
++static bool qemu_uae_machine_init(const char *model)
++{
++    ObjectClass *oc;
++    Object *cpuobj;
++    Error *err = NULL;
++
++    uae_log("QEMU: Initializing PPC CPU model %s\n", model);
++
++    /* Find the CPU class */
++    oc = cpu_class_by_name(TYPE_POWERPC_CPU, model);
++    if (!oc) {
++        uae_log("QEMU: Unknown CPU model %s\n", model);
++        return false;
++    }
++
++    /* Create CPU object */
++    cpuobj = object_new(object_class_get_name(oc));
++    state.cpu = POWERPC_CPU(cpuobj);
++    state.env = &state.cpu->env;
++
++    /* Realize the CPU */
++    qdev_realize(DEVICE(cpuobj), NULL, &err);
++    if (err) {
++        uae_log("QEMU: Failed to realize CPU: %s\n", error_get_pretty(err));
++        error_free(err);
++        object_unref(cpuobj);
++        return false;
++    }
++
++    qemu_register_reset(qemu_uae_machine_reset, state.cpu);
++    return true;
++}
++
++static bool initialize(const char *model)
++{
++    static bool initialized = false;
++    if (initialized) {
++        return false;
++    }
++    initialized = true;
++
++    qemu_uae_mutex_lock();
++
++    /* Create CPU */
++    if (!qemu_uae_machine_init(model)) {
++        qemu_uae_mutex_unlock();
++        return false;
++    }
++
++    /* Doesn't really do anything except in KVM mode */
++    cpu_synchronize_all_post_init();
++
++    /* Exception vector base at 0xfff00000, instead of 0x00000000 */
++    hreg_store_msr(state.env, 1 << MSR_EP, 0);
++
++    /* Log CPU model identifier */
++    uae_log("QEMU: CPU PVR 0x%08x\n", state.env->spr[SPR_PVR]);
++
++    qemu_uae_mutex_unlock();
++    return true;
++}
++
++bool PPCAPI ppc_cpu_init(const char* model, uint32_t hid1)
++{
++    /* In case qemu_uae_init hasn't been called by the user yet */
++    qemu_uae_init();
++
++    const char *qemu_model = model;
++    if (strcasecmp(model, "603ev") == 0) {
++        qemu_model = "603e7v1";
++    } else if (strcasecmp(model, "604e") == 0) {
++        qemu_model = "604e_v2.4";
++    }
++    uae_log("QEMU: ppc_cpu_init_with_model %s => %s\n", model, qemu_model);
++    state.hid1 = hid1;
++    return initialize(qemu_model);
++}
++
++bool PPCAPI qemu_uae_ppc_init(const char* model, uint32_t hid1)
++{
++    return ppc_cpu_init(model, hid1);
++}
++
++bool PPCAPI qemu_uae_ppc_in_cpu_thread(void)
++{
++    return qemu_cpu_is_self(CPU(state.cpu));
++}
++
++static void qemu_uae_lock_if_needed(void)
++{
++    if (qemu_uae_ppc_in_cpu_thread() == false) {
++        qemu_uae_mutex_lock();
++    }
++}
++
++static void qemu_uae_unlock_if_needed(void)
++{
++    if (qemu_uae_ppc_in_cpu_thread() == false) {
++        qemu_uae_mutex_unlock();
++    }
++}
++
++struct UAEregion
++{
++    struct MemoryRegion *region;
++    hwaddr addr;
++    unsigned int size;
++};
++
++static struct UAEregion added_regions[MAX_MEMORY_REGIONS + 1];
++
++static void ppc_cpu_map_add(PPCMemoryRegion *r)
++{
++    int i;
++    for (i = 0; i < MAX_MEMORY_REGIONS; i++) {
++        MemoryRegion *mem;
++        struct UAEregion *region = &added_regions[i];
++        if (region->region != NULL)
++            continue;
++        uae_log("QEMU: %02d %08x [+%8x]  =>  %p  \"%s\")\n",
++                i, r->start, r->size, r->memory, r->name);
++        mem = g_new(MemoryRegion, 1);
++        if (r->memory) {
++            memory_region_init_ram_ptr(mem, NULL, r->name, r->size, r->memory);
++        } else {
++            memory_region_init_io(mem, NULL, &indirect_ops,
++                                  (void *) (uintptr_t) r->start, r->name,
++                                  r->size);
++        }
++        memory_region_add_subregion(get_system_memory(), r->start, mem);
++        region->region = mem;
++        region->addr = r->start;
++        region->size = r->size;
++        return;
++    }
++}
++
++static void ppc_cpu_map_memory_single(PPCMemoryRegion *r)
++{
++    int i;
++    uae_log("QEMU: Map single memory region %08x + %08x '%s' (%p):\n",
++            r->start, r->size, r->name, r->memory);
++
++    if (r->alias == 0xffffffff) {
++        for (i = 0; i < MAX_MEMORY_REGIONS; i++) {
++            struct UAEregion *mem = &added_regions[i];
++            if (mem->region == NULL)
++                continue;
++            if (mem->addr >= r->start && mem->addr < r->start + r->size) {
++                uae_log("QEMU: region %02d %08x %08x deleted\n", i,
++                        (uint32_t)mem->addr,
++                        mem->size);
++                memory_region_del_subregion(get_system_memory(), mem->region);
++                object_unparent(OBJECT(mem->region));
++                mem->region = NULL;
++            }
++        }
++        return;
++    }
++
++    for (i = 0; i < MAX_MEMORY_REGIONS; i++) {
++        struct UAEregion *mem = &added_regions[i];
++        if (mem->region == NULL)
++            continue;
++        if (mem->addr == r->start && mem->size == r->size) {
++            uae_log("QEMU: region %02d replaced\n", i);
++            memory_region_del_subregion(get_system_memory(), mem->region);
++            if (r->memory) {
++                memory_region_init_ram_ptr(mem->region, NULL, r->name, r->size,
++                                           r->memory);
++            } else {
++                memory_region_init_io(
++                    mem->region, NULL, &indirect_ops,
++                    (void *) (uintptr_t) r->start, r->name, r->size);
++            }
++            memory_region_add_subregion(
++                get_system_memory(), r->start, mem->region);
++            return;
++        }
++    }
++    ppc_cpu_map_add(r);
++}
++
++static void ppc_cpu_map_memory_multi(PPCMemoryRegion *regions, int count)
++{
++    int i;
++
++    uae_log("QEMU: Map memory regions:\n");
++    if (count >= MAX_MEMORY_REGIONS) {
++        uae_log("QEMU: Too many memory regions!\n");
++        return;
++    }
++
++    /* Remove all existing memory regions */
++    for (i = 0; i < MAX_MEMORY_REGIONS; i++) {
++        struct UAEregion *mem = &added_regions[i];
++        if (mem->region == NULL)
++            continue;
++        memory_region_del_subregion(get_system_memory(), mem->region);
++        object_unparent(OBJECT(mem->region));
++        mem->region = NULL;
++    }
++
++    /* Create new memory subregions */
++    for (i = 0; i < count; i++)
++        ppc_cpu_map_add(&regions[i]);
++}
++
++void PPCAPI ppc_cpu_map_memory(PPCMemoryRegion *regions, int count)
++{
++    qemu_uae_lock_if_needed();
++    if (count >= 0)
++        ppc_cpu_map_memory_multi(regions, count);
++    else
++        ppc_cpu_map_memory_single(regions);
++    qemu_uae_unlock_if_needed();
++}
++
++void PPCAPI qemu_uae_ppc_external_interrupt(bool enable)
++{
++    ppc_set_irq(state.cpu, PPC_INTERRUPT_EXT, enable ? 1 : 0);
++}
++
++int PPCAPI qemu_uae_lock(int type)
++{
++    int result = 0;
++    if (type == QEMU_UAE_LOCK_TRYLOCK) {
++        result = qemu_uae_mutex_trylock();
++    } else if (type == QEMU_UAE_LOCK_TRYLOCK_CANCEL) {
++        qemu_uae_mutex_trylock_cancel();
++    } else if (type == QEMU_UAE_LOCK_ACQUIRE) {
++        qemu_uae_mutex_lock();
++    } else if (type == QEMU_UAE_LOCK_RELEASE) {
++        qemu_uae_mutex_unlock();
++    }
++    return result;
++}
++
++void PPCAPI ppc_cpu_run_continuous(void)
++{
++    uae_log("QEMU: Running main loop\n");
++    qemu_uae_mutex_lock();
++
++    cpu_enable_ticks();
++    runstate_set(RUN_STATE_RUNNING);
++    vm_state_notify(1, RUN_STATE_RUNNING);
++    resume_all_vcpus();
++
++    qemu_uae_set_started();
++
++    /* The main loop iteration unlocks and relocks the iothread lock */
++    main_loop();
++}
++
++void PPCAPI ppc_cpu_reset(void)
++{
++    uae_log("QEMU: Reset CPU\n");
++    cpu_reset(CPU(state.cpu));
++    state.env->spr[SPR_HID1] = state.hid1;
++    uae_log("QEMU: NIP = 0x%08x\n", state.env->nip);
++
++    uae_log("QEMU: Flushing all JIT translation blocks\n");
++    queue_tb_flush(CPU(state.cpu));
++}
++
++static void qemu_uae_log_cpu_state(void)
++{
++    int flags = 0;
++    uae_log("QEMU: PPC CPU dump:\n");
++    cpu_dump_state(CPU(state.cpu), stderr, flags);
++}
++
++void PPCAPI ppc_cpu_set_state(int set_state)
++{
++    uae_log("QEMU: Set state %d\n", set_state);
++    qemu_uae_lock_if_needed();
++    if (set_state == PPC_CPU_STATE_PAUSED) {
++        pause_all_vcpus();
++        state.cpu_state = PPC_CPU_STATE_PAUSED;
++        uae_log("QEMU: Paused!\n");
++        qemu_uae_log_cpu_state();
++    } else if (set_state == PPC_CPU_STATE_RUNNING) {
++        resume_all_vcpus();
++        state.cpu_state = PPC_CPU_STATE_RUNNING;
++        uae_log("QEMU: Resumed!\n");
++    }
++    qemu_uae_unlock_if_needed();
++}
++
++/* Storage for callback functions set by UAE */
++
++uae_log_function PPCAPI uae_log = NULL;
++uae_ppc_io_mem_read_function PPCAPI uae_ppc_io_mem_read = NULL;
++uae_ppc_io_mem_write_function PPCAPI uae_ppc_io_mem_write = NULL;
++uae_ppc_io_mem_read64_function PPCAPI uae_ppc_io_mem_read64 = NULL;
++uae_ppc_io_mem_write64_function PPCAPI uae_ppc_io_mem_write64 = NULL;
+diff --git a/uae/qemu-uae-main.c b/uae/qemu-uae-main.c
+new file mode 100644
+index 000000000..74f68e816
+--- /dev/null
++++ b/uae/qemu-uae-main.c
+@@ -0,0 +1,167 @@
++/*
++ * QEMU integration code for use with UAE
++ * Copyright 2014 Frode Solheim <frode@fs-uae.net>
++ * Adapted for QEMU 11.0 by Stefan Reinauer
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
++ * License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public License
++ * along with this library; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/log.h"
++#include "qemu/module.h"
++#include "qemu/main-loop.h"
++#include "qemu-version.h"
++#include "qapi/error.h"
++#include "system/system.h"
++#include "system/cpus.h"
++#include "system/runstate.h"
++#include "system/cpu-timers.h"
++#include "qemu-uae.h"
++
++#include "uae/log.h"
++#include "uae/ppc.h"
++#include "uae/qemu.h"
++
++#ifdef UAE
++#error UAE should not be defined here
++#endif
++
++/* Increase this when changes are not backwards compatible */
++#define VERSION_MAJOR 3
++
++/* Increase this when important changes are made */
++#define VERSION_MINOR 8
++
++/* Just increase this when the update is insignificant */
++#define VERSION_REVISION 2
++
++#if QEMU_UAE_VERSION_MAJOR != VERSION_MAJOR
++#error Major version mismatch between UAE and QEMU-UAE
++#endif
++
++#if QEMU_UAE_VERSION_MINOR != VERSION_MINOR
++#warning Minor version mismatch between UAE and QEMU-UAE
++#endif
++
++static struct {
++    volatile bool started;
++    bool exit_main_loop;
++} state;
++
++void qemu_uae_set_started(void)
++{
++    state.started = true;
++}
++
++void qemu_uae_wait_until_started(void)
++{
++    while (!state.started) {
++        qemu_uae_mutex_unlock();
++        g_usleep(10);
++        qemu_uae_mutex_lock();
++    }
++}
++
++void PPCAPI qemu_uae_version(int *major, int *minor, int *revision)
++{
++    *major = VERSION_MAJOR;
++    *minor = VERSION_MINOR;
++    *revision = VERSION_REVISION;
++}
++
++static bool initialize(void)
++{
++    int major, minor, revision;
++    Error *err = NULL;
++
++    qemu_uae_version(&major, &minor, &revision);
++    uae_log("QEMU: Initialize QEMU-UAE (QEMU %s + API %d.%d.%d)\n",
++            QEMU_FULL_VERSION, major, minor, revision);
++
++    /* Initialize the class system (and probably other stuff) */
++    uae_log("QEMU: MODULE_INIT_QOM\n");
++    module_call_init(MODULE_INIT_QOM);
++
++    /* qemu_init_main_loop installs signals */
++    /* FIXME: could conflict with UAE */
++    qemu_init_main_loop(&err);
++    if (err) {
++        uae_log("QEMU: qemu_init_main_loop failed: %s\n", error_get_pretty(err));
++        error_free(err);
++        return false;
++    }
++
++    /* Initialize conditions and mutex needed by CPU emulation */
++    qemu_init_cpu_loop();
++
++    /* Lock BQL */
++    qemu_uae_mutex_lock();
++
++    qemu_thread_naming(true);
++
++    qemu_uae_mutex_unlock();
++    return true;
++}
++
++static void qemu_uae_main(void)
++{
++    uae_log("QEMU: Running main loop\n");
++    qemu_uae_mutex_lock();
++
++    cpu_enable_ticks();
++    runstate_set(RUN_STATE_RUNNING);
++    vm_state_notify(1, RUN_STATE_RUNNING);
++
++    qemu_uae_set_started();
++
++    /* The main loop iteration unlocks and relocks the iothread lock */
++    main_loop();
++}
++
++static void *main_thread_function(void *arg)
++{
++    uae_log("QEMU: Main thread running\n");
++    qemu_uae_main();
++    return NULL;
++}
++
++static QemuThread main_thread;
++
++void PPCAPI qemu_uae_init(void)
++{
++    static bool initialized = false;
++    if (initialized) {
++        return;
++    }
++    uae_log("QEMU: Initializing\n");
++    initialize();
++    initialized = true;
++}
++
++void PPCAPI qemu_uae_start(void)
++{
++    static bool initialized = false;
++    if (initialized) {
++        return;
++    }
++    initialized = true;
++    uae_log("QEMU: Starting main loop\n");
++    qemu_thread_create(&main_thread, "QEMU Main", main_thread_function,
++                       NULL, QEMU_THREAD_DETACHED);
++}
++
++bool PPCAPI qemu_uae_main_loop_should_exit(void)
++{
++    return state.exit_main_loop;
++}
+diff --git a/uae/qemu-uae-slirp.c b/uae/qemu-uae-slirp.c
+new file mode 100644
+index 000000000..6c4c96701
+--- /dev/null
++++ b/uae/qemu-uae-slirp.c
+@@ -0,0 +1,79 @@
++/*
++ * QEMU Slirp glue code for use with UAE
++ * Copyright 2014 Frode Solheim <frode@fs-uae.net>
++ * Adapted for QEMU 11.0 by Stefan Reinauer
++ *
++ * This library is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU Lesser General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or (at
++ * your option) any later version.
++ *
++ * This library is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
++ * License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public License
++ * along with this library; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/sockets.h"
++#include "qemu-uae.h"
++
++#include "uae/log.h"
++#include "uae/qemu.h"
++
++/* Note: Slirp has been moved to a separate subproject in modern QEMU.
++ * This file may need significant adaptation depending on how slirp
++ * is integrated in the build. For now, we provide stub implementations
++ * that can be filled in once the build system is set up. */
++
++UAE_DEFINE_IMPORT_FUNCTION(uae_slirp_output)
++
++#ifdef CONFIG_SLIRP
++#include "slirp/libslirp.h"
++
++static Slirp *slirp;
++
++void qemu_uae_slirp_init(void)
++{
++    uae_log("QEMU: Initializing Slirp\n");
++
++    /* Note: slirp_init API has changed in modern libslirp.
++     * This needs to be adapted for the new API. */
++    uae_log("QEMU: Slirp initialization not yet implemented for modern QEMU\n");
++}
++
++void qemu_uae_slirp_input(const uint8_t *pkt, int pkt_len)
++{
++    uae_log("QEMU: qemu_uae_slirp_input pkt_len %d\n", pkt_len);
++    if (slirp == NULL) {
++        return;
++    }
++    slirp_input(slirp, pkt, pkt_len);
++}
++
++#else /* !CONFIG_SLIRP */
++
++void qemu_uae_slirp_init(void)
++{
++    uae_log("QEMU: Slirp support not compiled in\n");
++}
++
++void qemu_uae_slirp_input(const uint8_t *pkt, int pkt_len)
++{
++    uae_log("QEMU: Slirp support not compiled in\n");
++}
++
++#endif /* CONFIG_SLIRP */
++
++/* This function is called by slirp when it has data to send */
++void slirp_output(void *opaque, const uint8_t *pkt, int pkt_len)
++{
++    uae_log("QEMU: slirp_output pkt_len %d\n", pkt_len);
++    if (uae_slirp_output == NULL) {
++        return;
++    }
++    uae_slirp_output(pkt, pkt_len);
++}
+diff --git a/uae/qemu-uae.h b/uae/qemu-uae.h
+new file mode 100644
+index 000000000..dd9f53720
+--- /dev/null
++++ b/uae/qemu-uae.h
+@@ -0,0 +1,30 @@
++#ifndef QEMU_UAE_H
++#define QEMU_UAE_H
++
++#include "qemu/osdep.h"
++#include "qemu/thread.h"
++
++/* Forward declaration */
++struct CPUState;
++
++/* cpus.c - BQL (Big QEMU Lock) wrappers for UAE */
++
++void qemu_uae_mutex_lock(void);
++void qemu_uae_mutex_unlock(void);
++int qemu_uae_mutex_trylock(void);
++void qemu_uae_mutex_trylock_cancel(void);
++
++/* system/runstate.c or main-loop */
++
++void main_loop(void);
++
++/* qemu-uae-cpu.c */
++
++bool qemu_uae_main_loop_should_exit(void);
++
++/* qemu-uae-main.c */
++
++void qemu_uae_set_started(void);
++void qemu_uae_wait_until_started(void);
++
++#endif /* QEMU_UAE_H */
+diff --git a/uae/qemu.h b/uae/qemu.h
+new file mode 100644
+index 000000000..a0afd2d0b
+--- /dev/null
++++ b/uae/qemu.h
+@@ -0,0 +1,70 @@
++#ifndef UAE_QEMU_H
++#define UAE_QEMU_H
++
++/* This file is intended to be included by external libraries as well,
++ * so don't pull in too much UAE-specific stuff. */
++
++#include "uae/types.h"
++#include "uae/api.h"
++
++/* The qemu-uae major version must match this */
++#define QEMU_UAE_VERSION_MAJOR 3
++
++/* The qemu-uae minor version must be at least this */
++#define QEMU_UAE_VERSION_MINOR 8
++
++UAE_DECLARE_IMPORT_FUNCTION(
++	void, qemu_uae_version, int *major, int *minor, int *revision)
++UAE_DECLARE_IMPORT_FUNCTION(
++	void, qemu_uae_init, void)
++UAE_DECLARE_IMPORT_FUNCTION(
++	void, qemu_uae_start, void)
++UAE_DECLARE_IMPORT_FUNCTION(
++	int, qemu_uae_lock, int)
++
++UAE_DECLARE_IMPORT_FUNCTION(
++	void, qemu_uae_slirp_init, void)
++UAE_DECLARE_IMPORT_FUNCTION(
++	void, qemu_uae_slirp_input, const uint8_t *pkt, int pkt_len)
++
++UAE_DECLARE_EXPORT_FUNCTION(
++	void, uae_slirp_output, const uint8_t *pkt, int pkt_len)
++
++UAE_DECLARE_IMPORT_FUNCTION(
++	bool, qemu_uae_ppc_init, const char* model, uint32_t hid1)
++UAE_DECLARE_IMPORT_FUNCTION(
++	bool, qemu_uae_ppc_in_cpu_thread, void)
++UAE_DECLARE_IMPORT_FUNCTION(
++	void, qemu_uae_ppc_external_interrupt, bool)
++
++#define QEMU_UAE_LOCK_TRYLOCK 1
++#define QEMU_UAE_LOCK_TRYLOCK_CANCEL 2
++#define QEMU_UAE_LOCK_ACQUIRE 3
++#define QEMU_UAE_LOCK_RELEASE 4
++
++#ifdef UAE
++
++#include "uae/dlopen.h"
++
++UAE_DLHANDLE uae_qemu_uae_init(void);
++
++#endif /* UAE */
++
++#if 0
++#ifdef UAE
++typedef void (QEMUCALL *qemu_uae_version_function)(int *major, int *minor,
++												   int *revision);
++extern qemu_uae_version_function qemu_uae_version;
++#else
++void qemu_uae_version(int *major, int *minor, int *revision);
++#endif
++
++#ifdef UAE
++typedef void (QEMUCALL *qemu_uae_init_function)(void);
++extern qemu_uae_init_function qemu_uae_init;
++#else
++void qemu_uae_init(void);
++#endif
++#endif
++
++#endif /* UAE_QEMU_H */
+diff --git a/uae/types.h b/uae/types.h
+new file mode 100644
+index 000000000..b7162f249
+--- /dev/null
++++ b/uae/types.h
+@@ -0,0 +1,92 @@
++/*
++ * Common types used throughout the UAE source code
++ * Copyright (C) 2014 Frode Solheim
++ *
++ * Licensed under the terms of the GNU General Public License version 2.
++ * See the file 'COPYING' for full license text.
++ */
++
++#ifndef UAE_TYPES_H
++#define UAE_TYPES_H
++
++/* This file is intended to be included by external libraries as well,
++ * so don't pull in too much UAE-specific stuff. */
++
++#if 0
++#include "config.h"
++#endif
++
++/* Define uae_ integer types. Prefer long long int for uae_x64 since we can
++ * then use the %lld format specifier for both 32-bit and 64-bit instead of
++ * the ugly PRIx64 macros. */
++
++#include <stdint.h>
++
++typedef int8_t uae_s8;
++typedef uint8_t uae_u8;
++
++typedef int16_t uae_s16;
++typedef uint16_t uae_u16;
++
++typedef int32_t uae_s32;
++typedef uint32_t uae_u32;
++
++#ifndef uae_s64
++typedef long long int uae_s64;
++#endif
++#ifndef uae_u64
++typedef unsigned long long int uae_u64;
++#endif
++
++#ifdef HAVE___UINT128_T
++#define HAVE_UAE_U128
++typedef __uint128_t uae_u128;
++#endif
++
++/* Parts of the UAE/WinUAE code uses the bool type (from C++).
++ * Including stdbool.h lets this be valid also when compiling with C. */
++
++#ifndef __cplusplus
++#include <stdbool.h>
++#endif
++
++/* Use uaecptr to represent 32-bit (or 24-bit) addresses into the Amiga
++ * address space. This is a 32-bit unsigned int regarless of host arch. */
++
++typedef uae_u32 uaecptr;
++
++/* Define UAE character types. WinUAE uses TCHAR (typedef for wchar_t) for
++ * many strings. FS-UAE always uses char-based strings in UTF-8 format.
++ * Defining SIZEOF_TCHAR lets us determine whether to include overloaded
++ * functions in some cases or not. */
++
++typedef char uae_char;
++
++#ifdef _WIN32
++#include <tchar.h>
++#ifdef UNICODE
++#define SIZEOF_TCHAR 2
++#else
++#define SIZEOF_TCHAR 1
++#endif
++#else
++typedef char TCHAR;
++#define SIZEOF_TCHAR 1
++#endif
++
++#ifndef _T
++#if SIZEOF_TCHAR == 1
++#define _T(x) x
++#else
++#define _T(x) Lx
++#endif
++#endif
++
++#ifndef FALSE
++#define FALSE 0
++#endif
++#ifndef TRUE
++#define TRUE (!FALSE)
++#endif
++
++#endif /* UAE_TYPES_H */
+-- 
+2.50.1 (Apple Git-155)
+

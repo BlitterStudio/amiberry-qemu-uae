@@ -1,0 +1,42 @@
+From 88555fb31327d9165cc72296b2b1bbfb9567b9c4 Mon Sep 17 00:00:00 2001
+From: Stefan <stefan.reinauer@coreboot.org>
+Date: Sat, 17 Jan 2026 20:37:45 -0800
+Subject: [PATCH 2/7] target/ppc: allow UAE invalid instruction bits
+
+Skip the invalid-bits check for PPC instructions when QEMU_UAE is
+enabled.
+
+Toni Wilen confirmed that real CyberStorm PPC CPUs ignore these bits,
+so accepting them matches the accelerator behavior expected by UAE.
+---
+ target/ppc/translate.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/target/ppc/translate.c b/target/ppc/translate.c
+index a09a6df93..f2ef68b47 100644
+--- a/target/ppc/translate.c
++++ b/target/ppc/translate.c
+@@ -6505,6 +6505,12 @@ static bool decode_legacy(PowerPCCPU *cpu, DisasContext *ctx, uint32_t insn)
+         inval = handler->inval1;
+     }
+ 
++#ifdef QEMU_UAE
++    /*
++     * Toni Wilen confirmed that real CSPPC PPC CPU ignores invalid bits.
++     * Skip this check for UAE compatibility.
++     */
++#else
+     if (unlikely((insn & inval) != 0)) {
+         qemu_log_mask(LOG_GUEST_ERROR, "invalid bits: %08x for opcode: "
+                       "%02x - %02x - %02x - %02x (%08x) "
+@@ -6513,6 +6519,7 @@ static bool decode_legacy(PowerPCCPU *cpu, DisasContext *ctx, uint32_t insn)
+                       insn, ctx->cia);
+         return false;
+     }
++#endif
+ 
+     handler->handler(ctx);
+     return true;
+-- 
+2.50.1 (Apple Git-155)
+

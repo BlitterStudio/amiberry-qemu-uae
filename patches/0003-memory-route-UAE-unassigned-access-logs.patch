@@ -1,0 +1,57 @@
+From 36fe8527c22821975f6736200200f73dbf85635e Mon Sep 17 00:00:00 2001
+From: Stefan <stefan.reinauer@coreboot.org>
+Date: Sat, 17 Jan 2026 16:56:40 -0800
+Subject: [PATCH 3/7] memory: route UAE unassigned access logs
+
+When QEMU_UAE and DEBUG_UNASSIGNED are enabled, send unassigned
+memory access messages through uae_log() instead of printf().
+
+This lets the host emulator capture the diagnostics with its normal
+logging path.
+---
+ system/memory.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/system/memory.c b/system/memory.c
+index 56f3225b2..bbe8b820c 100644
+--- a/system/memory.c
++++ b/system/memory.c
+@@ -38,6 +38,10 @@
+ 
+ #include "memory-internal.h"
+ 
++#ifdef QEMU_UAE
++#include "uae/log.h"
++#endif
++
+ //#define DEBUG_UNASSIGNED
+ 
+ static unsigned memory_region_transaction_depth;
+@@ -1336,7 +1340,11 @@ static uint64_t unassigned_mem_read(void *opaque, hwaddr addr,
+                                     unsigned size)
+ {
+ #ifdef DEBUG_UNASSIGNED
++#ifdef QEMU_UAE
++    uae_log("Unassigned mem read " HWADDR_FMT_plx "\n", addr);
++#else
+     printf("Unassigned mem read " HWADDR_FMT_plx "\n", addr);
++#endif
+ #endif
+     return 0;
+ }
+@@ -1345,8 +1353,12 @@ static void unassigned_mem_write(void *opaque, hwaddr addr,
+                                  uint64_t val, unsigned size)
+ {
+ #ifdef DEBUG_UNASSIGNED
++#ifdef QEMU_UAE
++    uae_log("Unassigned mem write " HWADDR_FMT_plx " = 0x%"PRIx64"\n", addr, val);
++#else
+     printf("Unassigned mem write " HWADDR_FMT_plx " = 0x%"PRIx64"\n", addr, val);
+ #endif
++#endif
+ }
+ 
+ static bool unassigned_mem_accepts(void *opaque, hwaddr addr,
+-- 
+2.50.1 (Apple Git-155)
+
