@@ -27,6 +27,23 @@ The GitHub Actions workflow builds the plugin for the desktop platforms that can
 
 Android and iOS are not artifact targets because Amiberry currently disables dynamic PPC plugin loading there. FreeBSD and Haiku remain source-build or future-CI targets until their plugin packaging/runtime dependency story is proven.
 
+## Release Publishing
+
+Tagged releases publish reusable plugin asset archives for Amiberry packaging:
+
+| Asset | Contents |
+| --- | --- |
+| `qemu-uae-linux-x86_64.tar.xz` | `qemu-uae.so` |
+| `qemu-uae-linux-aarch64.tar.xz` | `qemu-uae.so` |
+| `qemu-uae-macos-universal.zip` | `qemu-uae.dylib` |
+| `qemu-uae-windows-x64.zip` | `qemu-uae.dll` |
+| `qemu-uae-windows-arm64.zip` | `qemu-uae.dll` |
+| `SHA256SUMS` | Checksums for the release assets |
+
+Use a tag such as `v11.0.1-amiberry.1` for the first release. The plugin is expected to change rarely, so Amiberry releases can keep reusing the same plugin release tag until either the QEMU-UAE API or plugin patch deck changes.
+
+These plugin artifacts are not signed here. Amiberry bundles the selected artifact into the final platform package, and the Amiberry release workflow handles macOS and Windows package signing after bundling.
+
 ## Build On Linux
 
 Install build dependencies:
