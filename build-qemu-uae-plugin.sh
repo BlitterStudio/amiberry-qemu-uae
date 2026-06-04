@@ -14,7 +14,7 @@ qemu_url="${QEMU_UAE_QEMU_URL:-${qemu_url_default}}"
 tarball="${QEMU_UAE_TARBALL:-}"
 source_dir="${QEMU_UAE_SOURCE_DIR:-}"
 output_plugin="${QEMU_UAE_OUTPUT_PLUGIN:-}"
-deps_prefix="${QEMU_UAE_DEPS_PREFIX:-${WINUAE_QEMU_UAE_DEPS_PREFIX:-}}"
+deps_prefix="${QEMU_UAE_DEPS_PREFIX:-}"
 jobs="${QEMU_UAE_JOBS:-}"
 clean=0
 verify=1
@@ -55,9 +55,9 @@ Options:
 Environment:
   QEMU_UAE_PATCH       Single patch file override.
   QEMU_UAE_PATCH_DIR   Directory containing ordered *.patch files.
-  QEMU_UAE_DEPS_PREFIX  Prefix containing glib-2.0 and slirp pkg-config files.
+  QEMU_UAE_DEPS_PREFIX  Prefix containing dependency pkg-config files.
   QEMU_UAE_NINJA        Ninja executable. Defaults to ninja in PATH.
-  MACOSX_DEPLOYMENT_TARGET or WINUAE_MACOS_DEPLOYMENT_TARGET
+  MACOSX_DEPLOYMENT_TARGET
                          macOS deployment target. Default on Darwin: 13.0.
 EOF
 }
@@ -160,10 +160,6 @@ if [[ -z "${jobs}" ]]; then
     jobs="${jobs:-4}"
 fi
 
-if [[ -z "${deps_prefix}" && -f "${script_dir}/../winuae-macos-deps/lib/pkgconfig/slirp.pc" ]]; then
-    deps_prefix="$(cd "${script_dir}/../winuae-macos-deps" && pwd)"
-fi
-
 if [[ -n "${deps_prefix}" ]]; then
     [[ -d "${deps_prefix}" ]] || die "dependency prefix does not exist: ${deps_prefix}"
     deps_prefix="$(cd "${deps_prefix}" && pwd)"
@@ -172,7 +168,7 @@ if [[ -n "${deps_prefix}" ]]; then
 fi
 
 if [[ "${host_system}" == "Darwin" ]]; then
-    export MACOSX_DEPLOYMENT_TARGET="${WINUAE_MACOS_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-13.0}}"
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
 fi
 
 download_qemu() {

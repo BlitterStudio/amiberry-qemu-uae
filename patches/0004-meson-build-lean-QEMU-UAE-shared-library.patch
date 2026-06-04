@@ -1,10 +1,10 @@
 From 0b824118a17bca81f564fcb09362658896ebdf21 Mon Sep 17 00:00:00 2001
 From: Stefan Reinauer <stefan.reinauer@coreboot.org>
 Date: Wed, 27 May 2026 21:39:07 -0700
-Subject: [PATCH 4/7] meson: build lean QEMU-UAE shared library
+Subject: [PATCH 4/6] meson: build lean QEMU-UAE shared library
 
 Add the qemu_uae Meson option and configure wrapper used to build
-QEMU as a WinUAE and FS-UAE PPC plugin shared library.
+QEMU as an Amiberry-compatible PPC plugin shared library.
 
 Build qemu-uae for the PPC target, request static PIC support,
 limit exported symbols to the host ABI, and disable unrelated tools,
@@ -197,7 +197,7 @@ index 31d5916cf..2a368d77f 100644
  option('fuzzing', type : 'boolean', value: false,
         description: 'build fuzzing targets')
 +option('qemu_uae', type : 'boolean', value: false,
-+       description: 'build QEMU-UAE shared library plugin for WinUAE/FS-UAE')
++       description: 'build QEMU-UAE shared library plugin for UAE hosts')
  option('gettext', type : 'feature', value : 'auto',
         description: 'Localization of the GTK+ user interface')
  option('modules', type : 'feature', value : 'disabled',

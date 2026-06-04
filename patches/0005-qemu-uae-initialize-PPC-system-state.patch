@@ -1,7 +1,7 @@
 From 0eed2acf48ad9a1158187f7a7d94431bde1c3471 Mon Sep 17 00:00:00 2001
 From: Stefan Reinauer <stefan.reinauer@coreboot.org>
 Date: Mon, 25 May 2026 09:24:11 -0700
-Subject: [PATCH 5/7] qemu-uae: initialize PPC system state
+Subject: [PATCH 5/6] qemu-uae: initialize PPC system state
 
 Initialize the QEMU 11.0 subsystem path before realizing the PPC CPU.
 
@@ -140,4 +140,3 @@ index ebe0543ad..ec76c2b38 100644
      return true;
 -- 
 2.50.1 (Apple Git-155)
-

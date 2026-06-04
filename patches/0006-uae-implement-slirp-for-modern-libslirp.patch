@@ -1,7 +1,7 @@
 From 1f031b8189da32e17bde1c2914c530ef158b1e86 Mon Sep 17 00:00:00 2001
 From: Stefan Reinauer <stefan.reinauer@coreboot.org>
 Date: Wed, 27 May 2026 21:46:12 -0700
-Subject: [PATCH 7/7] uae: implement slirp for modern libslirp
+Subject: [PATCH 6/6] uae: implement slirp for modern libslirp
 
 Replace the slirp stub with a bridge for modern libslirp releases.
 

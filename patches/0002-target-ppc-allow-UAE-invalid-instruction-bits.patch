@@ -1,7 +1,7 @@
 From 88555fb31327d9165cc72296b2b1bbfb9567b9c4 Mon Sep 17 00:00:00 2001
 From: Stefan <stefan.reinauer@coreboot.org>
 Date: Sat, 17 Jan 2026 20:37:45 -0800
-Subject: [PATCH 2/7] target/ppc: allow UAE invalid instruction bits
+Subject: [PATCH 2/6] target/ppc: allow UAE invalid instruction bits
 
 Skip the invalid-bits check for PPC instructions when QEMU_UAE is
 enabled.
@@ -39,4 +39,3 @@ index a09a6df93..f2ef68b47 100644
      return true;
 -- 
 2.50.1 (Apple Git-155)
-

@@ -1,7 +1,7 @@
 From e5d79f8e04c7ed40ddc0e2ed0a215bc5d9fa841e Mon Sep 17 00:00:00 2001
 From: Stefan Reinauer <stefan.reinauer@coreboot.org>
 Date: Wed, 27 May 2026 21:37:19 -0700
-Subject: [PATCH 1/7] uae: add QEMU-UAE plugin core
+Subject: [PATCH 1/6] uae: add QEMU-UAE plugin core
 
 Add the QEMU-UAE headers, PPC CPU shim, startup path, slirp stubs,
 and internal helper declarations needed by the plugin tree.
@@ -239,7 +239,7 @@ index 000000000..fdbc4acb5
 +#define UAEAPI UAE_EXTERN_C UAE_IMPORT
 +#endif
 +
-+/* WinUAE (or external libs) might be compiled with fastcall by default,
++/* Some UAE hosts might be compiled with fastcall by default,
 + * so we force all external functions to use cdecl calling convention. */
 +
 +#define UAECALL uae_cdecl
@@ -1430,7 +1430,7 @@ index 000000000..b7162f249
 +typedef __uint128_t uae_u128;
 +#endif
 +
-+/* Parts of the UAE/WinUAE code uses the bool type (from C++).
++/* Parts of the UAE host code use the bool type (from C++).
 + * Including stdbool.h lets this be valid also when compiling with C. */
 +
 +#ifndef __cplusplus
@@ -1442,8 +1442,8 @@ index 000000000..b7162f249
 +
 +typedef uae_u32 uaecptr;
 +
-+/* Define UAE character types. WinUAE uses TCHAR (typedef for wchar_t) for
-+ * many strings. FS-UAE always uses char-based strings in UTF-8 format.
++/* Define UAE character types. Some UAE hosts use TCHAR for strings, while
++ * this plugin ABI uses char-based strings in UTF-8 format.
 + * Defining SIZEOF_TCHAR lets us determine whether to include overloaded
 + * functions in some cases or not. */
 +
@@ -1479,4 +1479,3 @@ index 000000000..b7162f249
 +#endif /* UAE_TYPES_H */
 -- 
 2.50.1 (Apple Git-155)
-

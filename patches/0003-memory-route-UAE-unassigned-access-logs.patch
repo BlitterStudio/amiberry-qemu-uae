@@ -1,7 +1,7 @@
 From 36fe8527c22821975f6736200200f73dbf85635e Mon Sep 17 00:00:00 2001
 From: Stefan <stefan.reinauer@coreboot.org>
 Date: Sat, 17 Jan 2026 16:56:40 -0800
-Subject: [PATCH 3/7] memory: route UAE unassigned access logs
+Subject: [PATCH 3/6] memory: route UAE unassigned access logs
 
 When QEMU_UAE and DEBUG_UNASSIGNED are enabled, send unassigned
 memory access messages through uae_log() instead of printf().
@@ -54,4 +54,3 @@ index 56f3225b2..bbe8b820c 100644
  static bool unassigned_mem_accepts(void *opaque, hwaddr addr,
 -- 
 2.50.1 (Apple Git-155)
-
