@@ -63,6 +63,7 @@ jobs:
             patch \
             pkg-config \
             python3 \
+            python3-tomli \
             python3-venv \
             xz-utils \
             libglib2.0-dev \

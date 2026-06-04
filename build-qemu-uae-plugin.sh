@@ -221,7 +221,19 @@ extract_qemu() {
     local extract_dir="${work_dir}/.extract.$$"
     rm -rf "${extract_dir}"
     mkdir -p "${extract_dir}"
-    tar -xf "${tarball}" -C "${extract_dir}"
+    local tar_args=(-xf "${tarball}" -C "${extract_dir}")
+    case "${host_system}" in
+        MINGW*|MSYS*|CYGWIN*)
+            tar_args=(
+                --exclude="qemu-${qemu_version}/roms"
+                --exclude="qemu-${qemu_version}/roms/*"
+                --exclude="qemu-${qemu_version}/tests/lcitool"
+                --exclude="qemu-${qemu_version}/tests/lcitool/*"
+                "${tar_args[@]}"
+            )
+            ;;
+    esac
+    tar "${tar_args[@]}"
     mv "${extract_dir}/qemu-${qemu_version}" "${source_dir}"
     rm -rf "${extract_dir}"
 }
