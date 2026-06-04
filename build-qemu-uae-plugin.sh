@@ -18,6 +18,7 @@ deps_prefix="${QEMU_UAE_DEPS_PREFIX:-}"
 jobs="${QEMU_UAE_JOBS:-}"
 clean=0
 verify=1
+strip_plugin="${QEMU_UAE_STRIP:-1}"
 configure_args=()
 host_system="$(uname -s)"
 case "${host_system}" in
@@ -50,6 +51,7 @@ Options:
   -j, --jobs N         Ninja parallelism.
   --clean              Remove the source directory before extracting.
   --no-verify          Skip tarball SHA-256 verification.
+  --no-strip           Keep debug/local symbols in the output plugin.
   -h, --help           Show this help.
 
 Environment:
@@ -57,6 +59,8 @@ Environment:
   QEMU_UAE_PATCH_DIR   Directory containing ordered *.patch files.
   QEMU_UAE_DEPS_PREFIX  Prefix containing dependency pkg-config files.
   QEMU_UAE_NINJA        Ninja executable. Defaults to ninja in PATH.
+  QEMU_UAE_STRIP        Set to 0/false/no/off to keep symbols.
+  QEMU_UAE_STRIP_TOOL   Strip executable. Defaults to llvm-strip or strip.
   MACOSX_DEPLOYMENT_TARGET
                          macOS deployment target. Default on Darwin: 13.0.
 EOF
@@ -112,6 +116,10 @@ while [[ $# -gt 0 ]]; do
             verify=0
             shift
             ;;
+        --no-strip)
+            strip_plugin=0
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -126,6 +134,15 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+case "${strip_plugin}" in
+    0|false|False|FALSE|no|No|NO|off|Off|OFF)
+        strip_plugin=0
+        ;;
+    *)
+        strip_plugin=1
+        ;;
+esac
 
 patch_files=()
 if [[ -n "${patch_file}" ]]; then
@@ -275,6 +292,47 @@ find_ninja() {
     fi
 }
 
+find_strip() {
+    if [[ -n "${QEMU_UAE_STRIP_TOOL:-}" ]]; then
+        command -v "${QEMU_UAE_STRIP_TOOL}" || return 1
+    elif command -v llvm-strip >/dev/null 2>&1; then
+        command -v llvm-strip
+    elif command -v strip >/dev/null 2>&1; then
+        command -v strip
+    else
+        return 1
+    fi
+}
+
+file_size_bytes() {
+    stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || wc -c < "$1"
+}
+
+strip_qemu_uae_plugin() {
+    local plugin="$1"
+    [[ "${strip_plugin}" == "1" ]] || return
+
+    local strip_tool
+    if ! strip_tool="$(find_strip)"; then
+        echo "warning: no strip tool found; leaving ${plugin_name} unstripped" >&2
+        return
+    fi
+
+    local before
+    local after
+    before="$(file_size_bytes "${plugin}")"
+    case "${host_system}" in
+        Darwin*)
+            "${strip_tool}" -S -x "${plugin}"
+            ;;
+        *)
+            "${strip_tool}" --strip-unneeded "${plugin}"
+            ;;
+    esac
+    after="$(file_size_bytes "${plugin}")"
+    echo "stripped ${plugin_name}: ${before} -> ${after} bytes"
+}
+
 build_qemu_uae() {
     local ninja
     ninja="$(find_ninja)" || die "ninja not found; set QEMU_UAE_NINJA"
@@ -291,6 +349,7 @@ build_qemu_uae() {
     [[ -f "${built_plugin}" ]] || die "${plugin_name} was not produced"
     mkdir -p "$(dirname "${output_plugin}")"
     cp "${built_plugin}" "${output_plugin}"
+    strip_qemu_uae_plugin "${output_plugin}"
 }
 
 download_qemu
