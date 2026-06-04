@@ -6,17 +6,17 @@ Subject: [PATCH 4/7] meson: build lean QEMU-UAE shared library
 Add the qemu_uae Meson option and configure wrapper used to build
 QEMU as a WinUAE and FS-UAE PPC plugin shared library.
 
-Build qemu-uae.so for the PPC target, request static PIC support,
+Build qemu-uae for the PPC target, request static PIC support,
 limit exported symbols to the host ABI, and disable unrelated tools,
 UI, audio, block, network, smartcard, RDMA, and host-library backends.
 ---
- configure-qemu-uae        | 97 +++++++++++++++++++++++++++++++++++++++
- meson.build               | 32 +++++++++++++
+ configure-qemu-uae        | 111 ++++++++++++++++++++++++++++++++++++++
+ meson.build               | 31 +++++++++++++
  meson_options.txt         |  2 +
  uae/qemu-uae-ld64.symbols | 20 ++++++++
  uae/qemu-uae-main.c       |  2 -
  uae/qemu-uae.symbols      | 25 ++++++++++
- 6 files changed, 176 insertions(+), 2 deletions(-)
+ 6 files changed, 189 insertions(+), 2 deletions(-)
  create mode 100755 configure-qemu-uae
  create mode 100644 uae/qemu-uae-ld64.symbols
  create mode 100644 uae/qemu-uae.symbols
@@ -26,7 +26,7 @@ new file mode 100755
 index 000000000..346576135
 --- /dev/null
 +++ b/configure-qemu-uae
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,111 @@
 +#!/bin/sh -e
 +#
 +# Configure script for building QEMU-UAE plugin
@@ -45,8 +45,10 @@ index 000000000..346576135
 +OS_NAME=$(uname -s)
 +case $OS_NAME in
 +MINGW*|MSYS*)
-+    export CC=gcc
-+    export CXX=g++
++    : "${CC:=gcc}"
++    : "${CXX:=g++}"
++    export CC
++    export CXX
 +    ;;
 +*)
 +    EXTRA_CFLAGS="$EXTRA_CFLAGS -fPIC"
@@ -70,6 +72,13 @@ index 000000000..346576135
 +    --disable-dbus-display \
 +    --disable-pvg \
 +    --disable-coreaudio \
++    --disable-alsa \
++    --disable-dsound \
++    --disable-jack \
++    --disable-oss \
++    --disable-pa \
++    --disable-pipewire \
++    --disable-sndio \
 +    --audio-drv-list= \
 +    --disable-auth-pam \
 +    --disable-attr \
@@ -96,6 +105,8 @@ index 000000000..346576135
 +    --disable-brlapi \
 +    --disable-curses \
 +    --disable-kvm \
++    --disable-libudev \
++    --disable-bpf \
 +    --disable-user \
 +    --disable-vhost-net \
 +    --disable-spice \
@@ -105,10 +116,14 @@ index 000000000..346576135
 +    --disable-snappy \
 +    --disable-guest-agent \
 +    --disable-linux-aio \
++    --disable-linux-io-uring \
 +    --disable-seccomp \
 +    --disable-glusterfs \
 +    --disable-capstone \
 +    --disable-numa \
++    --disable-opengl \
++    --disable-xkbcommon \
++    --disable-sdl-image \
 +    --disable-rdma \
 +    --disable-smartcard \
 +    --disable-pie \
@@ -136,7 +151,7 @@ index 94feda2eb..8b0145c76 100644
  config_host_data.set('CONFIG_GCOV', get_option('b_coverage'))
  config_host_data.set('CONFIG_LIBUDEV', libudev.found())
  config_host_data.set('CONFIG_LINUX', host_os == 'linux')
-@@ -4441,6 +4442,37 @@ foreach target : target_dirs
+@@ -4441,6 +4442,36 @@ foreach target : target_dirs
        exe_name += '-unsigned'
      endif
  
@@ -162,8 +177,7 @@ index 94feda2eb..8b0145c76 100644
 +                 objects: lib.extract_all_objects(recursive: true),
 +                 link_depends: qemu_uae_link_depends,
 +                 link_args: qemu_uae_link_args,
-+                 name_prefix: '',
-+                 name_suffix: 'so')
++                 name_prefix: '')
 +      emulators += {'qemu-uae': emulator}
 +      # Also add qemu-system-ppc alias for test compatibility
 +      emulators += {'qemu-system-ppc': emulator}
@@ -259,4 +273,3 @@ index 000000000..c15ee3eb5
 +};
 -- 
 2.50.1 (Apple Git-155)
-

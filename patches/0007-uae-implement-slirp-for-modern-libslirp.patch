@@ -22,8 +22,8 @@ diff --git a/configure-qemu-uae b/configure-qemu-uae
 index 346576135..43a5a2f27 100755
 --- a/configure-qemu-uae
 +++ b/configure-qemu-uae
-@@ -82,6 +82,7 @@ esac
-     --disable-numa \
+@@ -97,6 +97,7 @@ esac
+     --disable-sdl-image \
      --disable-rdma \
      --disable-smartcard \
 +    --disable-slirp \
@@ -356,4 +356,3 @@ index 6c4c96701..3a6f0a176 100644
 -}
 -- 
 2.50.1 (Apple Git-155)
-

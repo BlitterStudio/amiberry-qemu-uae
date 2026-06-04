@@ -19,20 +19,33 @@ jobs="${QEMU_UAE_JOBS:-}"
 clean=0
 verify=1
 configure_args=()
+host_system="$(uname -s)"
+case "${host_system}" in
+    Darwin*)
+        plugin_extension="dylib"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        plugin_extension="dll"
+        ;;
+    *)
+        plugin_extension="so"
+        ;;
+esac
+plugin_name="qemu-uae.${plugin_extension}"
 
 usage() {
     cat <<EOF
 Usage: $0 [options] [-- configure-arg ...]
 
 Download QEMU ${qemu_version}, apply the QEMU-UAE patch deck, and build
-qemu-uae.so.
+the native qemu-uae plugin artifact.
 
 Options:
   --work-dir DIR       Working directory. Default: ./build next to script.
   --source-dir DIR     Patched QEMU source directory.
   --tarball FILE       Use an existing QEMU ${qemu_version} tarball.
   --url URL            Download URL. Default: ${qemu_url_default}
-  --output FILE        Copy qemu-uae.so to FILE after building.
+  --output FILE        Copy the finished qemu-uae plugin to FILE.
   --patch-dir DIR      Directory containing ordered *.patch files.
   -j, --jobs N         Ninja parallelism.
   --clean              Remove the source directory before extracting.
@@ -134,7 +147,7 @@ if [[ -z "${source_dir}" ]]; then
     source_dir="${work_dir}/qemu-${qemu_version}-uae"
 fi
 if [[ -z "${output_plugin}" ]]; then
-    output_plugin="${work_dir}/qemu-uae.so"
+    output_plugin="${work_dir}/${plugin_name}"
 fi
 
 if [[ -z "${jobs}" ]]; then
@@ -158,7 +171,7 @@ if [[ -n "${deps_prefix}" ]]; then
     export PKG_CONFIG_LIBDIR="${deps_prefix}/lib/pkgconfig:${deps_prefix}/share/pkgconfig${PKG_CONFIG_LIBDIR:+:${PKG_CONFIG_LIBDIR}}"
 fi
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "${host_system}" == "Darwin" ]]; then
     export MACOSX_DEPLOYMENT_TARGET="${WINUAE_MACOS_DEPLOYMENT_TARGET:-${MACOSX_DEPLOYMENT_TARGET:-13.0}}"
 fi
 
@@ -264,11 +277,12 @@ build_qemu_uae() {
             --ninja="${ninja}" \
             ${configure_args[@]+"${configure_args[@]}"}
     )
-    "${ninja}" -C "${source_dir}/build" -j "${jobs}" qemu-uae.so
+    "${ninja}" -C "${source_dir}/build" -j "${jobs}" "${plugin_name}"
 
-    [[ -f "${source_dir}/build/qemu-uae.so" ]] || die "qemu-uae.so was not produced"
+    local built_plugin="${source_dir}/build/${plugin_name}"
+    [[ -f "${built_plugin}" ]] || die "${plugin_name} was not produced"
     mkdir -p "$(dirname "${output_plugin}")"
-    cp "${source_dir}/build/qemu-uae.so" "${output_plugin}"
+    cp "${built_plugin}" "${output_plugin}"
 }
 
 download_qemu
