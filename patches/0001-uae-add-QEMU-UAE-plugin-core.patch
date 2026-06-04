@@ -366,7 +366,7 @@ index 000000000..83b7a0fd7
 +//UAEAPI void UAECALL uae_log(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
 +void UAECALL uae_log(const char *format, ...) UAE_PRINTF_FORMAT(1, 2);
 +#else
-+extern uae_log_function uae_log;
++extern UAE_EXPORT uae_log_function uae_log;
 +#endif
 +
 +#ifdef FSUAE // NL
@@ -548,10 +548,10 @@ index 000000000..2e23b00ae
 +
 +#else
 +
-+extern uae_ppc_io_mem_read_function uae_ppc_io_mem_read;
-+extern uae_ppc_io_mem_write_function uae_ppc_io_mem_write;
-+extern uae_ppc_io_mem_read64_function uae_ppc_io_mem_read64;
-+extern uae_ppc_io_mem_write64_function uae_ppc_io_mem_write64;
++extern UAE_EXPORT uae_ppc_io_mem_read_function uae_ppc_io_mem_read;
++extern UAE_EXPORT uae_ppc_io_mem_write_function uae_ppc_io_mem_write;
++extern UAE_EXPORT uae_ppc_io_mem_read64_function uae_ppc_io_mem_read64;
++extern UAE_EXPORT uae_ppc_io_mem_write64_function uae_ppc_io_mem_write64;
 +
 +#endif
 +
