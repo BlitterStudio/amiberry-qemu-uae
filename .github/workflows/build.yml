@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install dependencies
         run: |
@@ -37,7 +37,7 @@ jobs:
         run: ./build-qemu-uae-plugin.sh --clean -j "$(nproc)" --output dist/qemu-uae.so
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qemu-uae-linux-x86_64
           path: dist/qemu-uae.so
