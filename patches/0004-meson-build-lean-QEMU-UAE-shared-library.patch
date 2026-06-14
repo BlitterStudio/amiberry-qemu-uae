@@ -13,10 +13,10 @@ UI, audio, block, network, smartcard, RDMA, and host-library backends.
  configure-qemu-uae        | 111 ++++++++++++++++++++++++++++++++++++++
  meson.build               | 31 +++++++++++++
  meson_options.txt         |  2 +
- uae/qemu-uae-ld64.symbols | 20 ++++++++
+ uae/qemu-uae-ld64.symbols | 21 ++++++++
  uae/qemu-uae-main.c       |  2 -
- uae/qemu-uae.symbols      | 25 ++++++++++
- 6 files changed, 189 insertions(+), 2 deletions(-)
+ uae/qemu-uae.symbols      | 26 ++++++++++
+ 6 files changed, 191 insertions(+), 2 deletions(-)
  create mode 100755 configure-qemu-uae
  create mode 100644 uae/qemu-uae-ld64.symbols
  create mode 100644 uae/qemu-uae.symbols
@@ -206,8 +206,9 @@ new file mode 100644
 index 000000000..4a82508d7
 --- /dev/null
 +++ b/uae/qemu-uae-ld64.symbols
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +_ppc_cpu_init
++_ppc_cpu_flush_jit
 +_ppc_cpu_map_memory
 +_ppc_cpu_reset
 +_ppc_cpu_run_continuous
@@ -245,9 +246,10 @@ new file mode 100644
 index 000000000..c15ee3eb5
 --- /dev/null
 +++ b/uae/qemu-uae.symbols
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,26 @@
 +{
 +  global:
++    ppc_cpu_flush_jit;
 +    ppc_cpu_init;
 +    ppc_cpu_map_memory;
 +    ppc_cpu_reset;

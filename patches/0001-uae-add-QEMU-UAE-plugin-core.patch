@@ -18,8 +18,8 @@ CPU execution and drive the exported main loop.
  uae/attributes.h       |  34 ++++
  uae/log.h              | 101 +++++++++++
  uae/meson.build        |   6 +
- uae/ppc.h              | 140 ++++++++++++++
- uae/qemu-uae-cpu.c     | 401 +++++++++++++++++++++++++++++++++++++++++
+ uae/ppc.h              | 141 ++++++++++++++
+ uae/qemu-uae-cpu.c     | 420 +++++++++++++++++++++++++++++++++++++++++
  uae/qemu-uae-main.c    | 167 +++++++++++++++++
  uae/qemu-uae-slirp.c   |  79 ++++++++
  uae/qemu-uae.h         |  30 +++
@@ -461,7 +461,7 @@ new file mode 100644
 index 000000000..2e23b00ae
 --- /dev/null
 +++ b/uae/ppc.h
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,141 @@
 +/*
 + * Platform-independent loadable module functions for UAE
 + * Copyright (C) 2014 Toni Wilen, Frode Solheim
@@ -580,6 +580,7 @@ index 000000000..2e23b00ae
 +void PPCCALL ppc_cpu_do_dec(int value);
 +void PPCCALL ppc_cpu_pause(int pause);
 +void PPCCALL ppc_cpu_reset(void);
++void PPCCALL ppc_cpu_flush_jit(void);
 +
 +#define PPC_CPU_STATE_RUNNING 1
 +#define PPC_CPU_STATE_PAUSED 2
@@ -607,7 +608,7 @@ new file mode 100644
 index 000000000..e4ff7fa04
 --- /dev/null
 +++ b/uae/qemu-uae-cpu.c
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,420 @@
 +/*
 + * PowerPC CPU library code for use with UAE
 + * Copyright 2014 Frode Solheim <frode@fs-uae.net>
@@ -976,6 +977,25 @@ index 000000000..e4ff7fa04
 +
 +    uae_log("QEMU: Flushing all JIT translation blocks\n");
 +    queue_tb_flush(CPU(state.cpu));
++}
++
++void PPCAPI ppc_cpu_flush_jit(void)
++{
++    static int64_t last_flush;
++    int64_t now;
++
++    if (!state.cpu) {
++        return;
++    }
++
++    now = g_get_monotonic_time();
++    if (now - last_flush < 10000) {
++        return;
++    }
++
++    queue_tb_flush(CPU(state.cpu));
++    qemu_cpu_kick(CPU(state.cpu));
++    last_flush = now;
 +}
 +
 +static void qemu_uae_log_cpu_state(void)
