@@ -193,6 +193,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up MSYS2
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.msystem }}
@@ -227,7 +228,79 @@ jobs:
       - name: Package release asset
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/qemu-uae.dll -DestinationPath "dist/qemu-uae-windows-${{ matrix.arch }}.zip" -Force
+          $packageDir = "dist/qemu-uae-windows-${{ matrix.arch }}"
+          $msysRoot = '${{ steps.msys2.outputs.msys2-location }}'
+          $msysPrefix = switch ('${{ matrix.msystem }}') {
+            'CLANG64' { 'clang64' }
+            'CLANGARM64' { 'clangarm64' }
+            default { throw "Unsupported MSYS2 environment: ${{ matrix.msystem }}" }
+          }
+          $msysBin = Join-Path $msysRoot $msysPrefix
+          $msysBin = Join-Path $msysBin 'bin'
+          $requiredRuntimeDlls = @(
+            "zlib1.dll",
+            "libglib-2.0-0.dll",
+            "libgmodule-2.0-0.dll",
+            "libwinpthread-1.dll"
+          )
+          $optionalRuntimeDlls = @(
+            "libintl-8.dll",
+            "libiconv-2.dll",
+            "libcharset-1.dll",
+            "libpcre2-8-0.dll",
+            "libffi-8.dll"
+          )
+
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item -Path "dist/qemu-uae.dll" -Destination $packageDir -Force
+
+          foreach ($dll in $requiredRuntimeDlls) {
+            $source = Join-Path $msysBin $dll
+            if (!(Test-Path $source)) {
+              throw "Required runtime DLL not found: $source"
+            }
+            Copy-Item -Path $source -Destination $packageDir -Force
+          }
+
+          foreach ($dll in $optionalRuntimeDlls) {
+            $source = Join-Path $msysBin $dll
+            if (Test-Path $source) {
+              Copy-Item -Path $source -Destination $packageDir -Force
+            }
+          }
+
+          Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath "dist/qemu-uae-windows-${{ matrix.arch }}.zip" -Force
+
+      - name: Verify release package
+        shell: pwsh
+        run: |
+          $zipPath = "dist/qemu-uae-windows-${{ matrix.arch }}.zip"
+          $verifyDir = Join-Path $env:RUNNER_TEMP "qemu-uae-windows-${{ matrix.arch }}"
+          $requiredDlls = @(
+            "qemu-uae.dll",
+            "zlib1.dll",
+            "libglib-2.0-0.dll",
+            "libgmodule-2.0-0.dll",
+            "libwinpthread-1.dll"
+          )
+
+          if (Test-Path $verifyDir) {
+            Remove-Item -Path $verifyDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $verifyDir -Force | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $verifyDir -Force
+
+          foreach ($dll in $requiredDlls) {
+            $path = Join-Path $verifyDir $dll
+            if (!(Test-Path $path)) {
+              throw "Required DLL missing from release package: $dll"
+            }
+          }
+          $iconvPath = Join-Path $verifyDir "libiconv-2.dll"
+          $charsetPath = Join-Path $verifyDir "libcharset-1.dll"
+          if ((Test-Path $iconvPath) -and !(Test-Path $charsetPath)) {
+            throw "libcharset-1.dll is required when libiconv-2.dll is packaged."
+          }
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v7
