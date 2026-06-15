@@ -246,6 +246,7 @@ jobs:
           $optionalRuntimeDlls = @(
             "libintl-8.dll",
             "libiconv-2.dll",
+            "libcharset-1.dll",
             "libpcre2-8-0.dll",
             "libffi-8.dll"
           )
@@ -294,6 +295,11 @@ jobs:
             if (!(Test-Path $path)) {
               throw "Required DLL missing from release package: $dll"
             }
+          }
+          $iconvPath = Join-Path $verifyDir "libiconv-2.dll"
+          $charsetPath = Join-Path $verifyDir "libcharset-1.dll"
+          if ((Test-Path $iconvPath) -and !(Test-Path $charsetPath)) {
+            throw "libcharset-1.dll is required when libiconv-2.dll is packaged."
           }
 
       - name: Upload plugin artifact
