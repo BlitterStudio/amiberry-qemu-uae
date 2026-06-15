@@ -36,8 +36,8 @@ Tagged releases publish reusable plugin asset archives for Amiberry packaging:
 | `qemu-uae-linux-x86_64.tar.xz` | `qemu-uae.so` |
 | `qemu-uae-linux-aarch64.tar.xz` | `qemu-uae.so` |
 | `qemu-uae-macos-universal.zip` | `qemu-uae.dylib` |
-| `qemu-uae-windows-x64.zip` | `qemu-uae.dll` |
-| `qemu-uae-windows-arm64.zip` | `qemu-uae.dll` |
+| `qemu-uae-windows-x64.zip` | `qemu-uae.dll` plus required MSYS2 runtime DLLs |
+| `qemu-uae-windows-arm64.zip` | `qemu-uae.dll` plus required MSYS2 runtime DLLs |
 | `SHA256SUMS` | Checksums for the release assets |
 
 Use a tag such as `v11.0.1-amiberry.1` for the first release. The plugin is expected to change rarely, so Amiberry releases can keep reusing the same plugin release tag until either the QEMU-UAE API or plugin patch deck changes.
