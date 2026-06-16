@@ -36,8 +36,8 @@ Tagged releases publish reusable plugin asset archives for Amiberry packaging:
 | `qemu-uae-linux-x86_64.tar.xz` | `qemu-uae.so` |
 | `qemu-uae-linux-aarch64.tar.xz` | `qemu-uae.so` |
 | `qemu-uae-macos-universal.zip` | `qemu-uae.dylib` |
-| `qemu-uae-windows-x64.zip` | `qemu-uae.dll` plus required MSYS2 runtime DLLs |
-| `qemu-uae-windows-arm64.zip` | `qemu-uae.dll` plus required MSYS2 runtime DLLs |
+| `qemu-uae-windows-x64.zip` | `qemu-uae.dll`; CI statically links GLib/zlib/MSYS2 plugin dependencies |
+| `qemu-uae-windows-arm64.zip` | `qemu-uae.dll`; CI statically links GLib/zlib/MSYS2 plugin dependencies |
 | `SHA256SUMS` | Checksums for the release assets |
 
 Use a tag such as `v11.0.1-amiberry.1` for the first release. The plugin is expected to change rarely, so Amiberry releases can keep reusing the same plugin release tag until either the QEMU-UAE API or plugin patch deck changes.
@@ -110,7 +110,7 @@ Install build dependencies with `pacman`/`pacboy`, then build:
 ```bash
 pacboy -S --needed clang:p glib2:p ninja:p pkgconf:p python:p zlib:p
 pacman -S --needed base-devel ca-certificates curl git patch tar xz
-CC=clang CXX=clang++ ./build-qemu-uae-plugin.sh --clean -j "$(nproc)"
+CC=clang CXX=clang++ ./build-qemu-uae-plugin.sh --clean --static-deps -j "$(nproc)"
 ```
 
 The default Windows output is:
@@ -118,6 +118,8 @@ The default Windows output is:
 ```text
 build/qemu-uae.dll
 ```
+
+`--static-deps` is Windows-only and matches the release workflow. It enables static pkg-config and linker flags so GLib, zlib, and their MSYS2 transitive plugin dependencies are linked into `qemu-uae.dll` instead of being shipped as sidecar DLLs.
 
 ## Use With Amiberry
 

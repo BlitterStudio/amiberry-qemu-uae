@@ -10,13 +10,13 @@ Build qemu-uae for the PPC target, request static PIC support,
 limit exported symbols to the host ABI, and disable unrelated tools,
 UI, audio, block, network, smartcard, RDMA, and host-library backends.
 ---
- configure-qemu-uae        | 111 ++++++++++++++++++++++++++++++++++++++
+ configure-qemu-uae        | 112 ++++++++++++++++++++++++++++++++++++++
  meson.build               | 31 +++++++++++++
  meson_options.txt         |  2 +
  uae/qemu-uae-ld64.symbols | 21 ++++++++
  uae/qemu-uae-main.c       |  2 -
  uae/qemu-uae.symbols      | 26 ++++++++++
- 6 files changed, 191 insertions(+), 2 deletions(-)
+ 6 files changed, 192 insertions(+), 2 deletions(-)
  create mode 100755 configure-qemu-uae
  create mode 100644 uae/qemu-uae-ld64.symbols
  create mode 100644 uae/qemu-uae.symbols
@@ -26,7 +26,7 @@ new file mode 100755
 index 000000000..346576135
 --- /dev/null
 +++ b/configure-qemu-uae
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,112 @@
 +#!/bin/sh -e
 +#
 +# Configure script for building QEMU-UAE plugin

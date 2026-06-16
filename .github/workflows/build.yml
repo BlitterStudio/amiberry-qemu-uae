@@ -223,51 +223,59 @@ jobs:
         env:
           CC: clang
           CXX: clang++
-        run: ./build-qemu-uae-plugin.sh --clean -j "$(nproc)" --output dist/qemu-uae.dll
+        run: ./build-qemu-uae-plugin.sh --clean --static-deps -j "$(nproc)" --output dist/qemu-uae.dll
+
+      - name: Verify static Windows imports
+        shell: msys2 {0}
+        run: |
+          objdump_tool="$(command -v objdump || true)"
+          if [[ -z "${objdump_tool}" ]]; then
+            echo "objdump not found" >&2
+            exit 1
+          fi
+
+          imports="$("${objdump_tool}" -p dist/qemu-uae.dll | sed -n 's/^[[:space:]]*DLL Name: //p')"
+          printf '%s\n' "${imports}" | sort -f
+
+          forbidden_dlls=(
+            zlib1.dll
+            libglib-2.0-0.dll
+            libgmodule-2.0-0.dll
+            libwinpthread-1.dll
+            libintl-8.dll
+            libiconv-2.dll
+            libcharset-1.dll
+            libpcre2-8-0.dll
+            libffi-8.dll
+          )
+
+          failed=0
+          for dll in "${forbidden_dlls[@]}"; do
+            if printf '%s\n' "${imports}" | grep -Fxi "${dll}" >/dev/null; then
+              echo "Forbidden dynamic dependency remains: ${dll}" >&2
+              failed=1
+            fi
+          done
+
+          while IFS= read -r dll; do
+            lower_dll="${dll,,}"
+            case "${lower_dll}" in
+              lib*.dll|zlib*.dll|msys-*.dll|clang_rt*.dll)
+                echo "Unexpected non-system runtime import remains: ${dll}" >&2
+                failed=1
+                ;;
+            esac
+          done <<< "${imports}"
+
+          exit "${failed}"
 
       - name: Package release asset
         shell: pwsh
         run: |
           $packageDir = "dist/qemu-uae-windows-${{ matrix.arch }}"
-          $msysRoot = '${{ steps.msys2.outputs.msys2-location }}'
-          $msysPrefix = switch ('${{ matrix.msystem }}') {
-            'CLANG64' { 'clang64' }
-            'CLANGARM64' { 'clangarm64' }
-            default { throw "Unsupported MSYS2 environment: ${{ matrix.msystem }}" }
-          }
-          $msysBin = Join-Path $msysRoot $msysPrefix
-          $msysBin = Join-Path $msysBin 'bin'
-          $requiredRuntimeDlls = @(
-            "zlib1.dll",
-            "libglib-2.0-0.dll",
-            "libgmodule-2.0-0.dll",
-            "libwinpthread-1.dll"
-          )
-          $optionalRuntimeDlls = @(
-            "libintl-8.dll",
-            "libiconv-2.dll",
-            "libcharset-1.dll",
-            "libpcre2-8-0.dll",
-            "libffi-8.dll"
-          )
 
           New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
           Copy-Item -Path "dist/qemu-uae.dll" -Destination $packageDir -Force
-
-          foreach ($dll in $requiredRuntimeDlls) {
-            $source = Join-Path $msysBin $dll
-            if (!(Test-Path $source)) {
-              throw "Required runtime DLL not found: $source"
-            }
-            Copy-Item -Path $source -Destination $packageDir -Force
-          }
-
-          foreach ($dll in $optionalRuntimeDlls) {
-            $source = Join-Path $msysBin $dll
-            if (Test-Path $source) {
-              Copy-Item -Path $source -Destination $packageDir -Force
-            }
-          }
 
           Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath "dist/qemu-uae-windows-${{ matrix.arch }}.zip" -Force
 
@@ -276,13 +284,6 @@ jobs:
         run: |
           $zipPath = "dist/qemu-uae-windows-${{ matrix.arch }}.zip"
           $verifyDir = Join-Path $env:RUNNER_TEMP "qemu-uae-windows-${{ matrix.arch }}"
-          $requiredDlls = @(
-            "qemu-uae.dll",
-            "zlib1.dll",
-            "libglib-2.0-0.dll",
-            "libgmodule-2.0-0.dll",
-            "libwinpthread-1.dll"
-          )
 
           if (Test-Path $verifyDir) {
             Remove-Item -Path $verifyDir -Recurse -Force
@@ -290,16 +291,16 @@ jobs:
           New-Item -ItemType Directory -Path $verifyDir -Force | Out-Null
           Expand-Archive -Path $zipPath -DestinationPath $verifyDir -Force
 
-          foreach ($dll in $requiredDlls) {
-            $path = Join-Path $verifyDir $dll
-            if (!(Test-Path $path)) {
-              throw "Required DLL missing from release package: $dll"
-            }
+          $pluginPath = Join-Path $verifyDir "qemu-uae.dll"
+          if (!(Test-Path $pluginPath)) {
+            throw "Required DLL missing from release package: qemu-uae.dll"
           }
-          $iconvPath = Join-Path $verifyDir "libiconv-2.dll"
-          $charsetPath = Join-Path $verifyDir "libcharset-1.dll"
-          if ((Test-Path $iconvPath) -and !(Test-Path $charsetPath)) {
-            throw "libcharset-1.dll is required when libiconv-2.dll is packaged."
+
+          $extraDlls = Get-ChildItem -Path $verifyDir -File -Filter "*.dll" |
+            Where-Object { $_.Name -ne "qemu-uae.dll" }
+          if ($extraDlls) {
+            $names = ($extraDlls | ForEach-Object { $_.Name }) -join ", "
+            throw "Unexpected runtime DLLs in statically linked release package: $names"
           }
 
       - name: Upload plugin artifact
