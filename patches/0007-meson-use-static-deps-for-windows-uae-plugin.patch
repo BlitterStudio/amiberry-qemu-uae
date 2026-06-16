@@ -1,0 +1,53 @@
+From 8ea7a54a2c5a7cdb6e1d39f830b02c7f6cf09937 Mon Sep 17 00:00:00 2001
+From: Dimitris Panokostas <midwan@users.noreply.github.com>
+Date: Tue, 16 Jun 2026 17:06:00 +0200
+Subject: [PATCH 7/7] meson: use static deps for Windows UAE plugin
+
+When qemu-uae is built as a Windows plugin with prefer_static enabled,
+request static pkg-config dependencies for GLib, GModule, and zlib.
+Without the explicit static dependency flag, Meson can still choose
+MSYS2 import libraries even though the global linker flags include
+`-static`.
+---
+ meson.build | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 8b0145c76..91ecf5432 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1048,15 +1048,19 @@
+ # You should also check if any of the glib.version() checks
+ # below can also be removed.
+ glib_req_ver = '>=2.66.0'
++qemu_uae_static_dep = host_os == 'windows' and get_option('qemu_uae') and get_option('prefer_static')
+ glib_pc = dependency('glib-2.0', version: glib_req_ver, required: true,
+-                    method: 'pkg-config')
++                    method: 'pkg-config',
++                    static: qemu_uae_static_dep)
+ glib_cflags = []
+ if enable_modules
+   gmodule = dependency('gmodule-export-2.0', version: glib_req_ver, required: true,
+-                       method: 'pkg-config')
++                       method: 'pkg-config',
++                       static: qemu_uae_static_dep)
+ elif get_option('plugins')
+   gmodule = dependency('gmodule-no-export-2.0', version: glib_req_ver, required: true,
+-                       method: 'pkg-config')
++                       method: 'pkg-config',
++                       static: qemu_uae_static_dep)
+ else
+   gmodule = not_found
+ endif
+@@ -1149,7 +1153,7 @@
+                       method: 'pkg-config')
+ endif
+ 
+-zlib = dependency('zlib', required: true)
++zlib = dependency('zlib', required: true, static: qemu_uae_static_dep)
+ 
+ libaio = not_found
+ if not get_option('linux_aio').auto() or have_block
+-- 
+2.54.0
+

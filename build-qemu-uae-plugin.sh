@@ -19,6 +19,7 @@ jobs="${QEMU_UAE_JOBS:-}"
 clean=0
 verify=1
 strip_plugin="${QEMU_UAE_STRIP:-1}"
+static_deps="${QEMU_UAE_STATIC_DEPS:-0}"
 configure_args=()
 host_system="$(uname -s)"
 case "${host_system}" in
@@ -52,6 +53,7 @@ Options:
   --clean              Remove the source directory before extracting.
   --no-verify          Skip tarball SHA-256 verification.
   --no-strip           Keep debug/local symbols in the output plugin.
+  --static-deps        Link external dependencies statically. Windows only.
   -h, --help           Show this help.
 
 Environment:
@@ -59,6 +61,7 @@ Environment:
   QEMU_UAE_PATCH_DIR   Directory containing ordered *.patch files.
   QEMU_UAE_DEPS_PREFIX  Prefix containing dependency pkg-config files.
   QEMU_UAE_NINJA        Ninja executable. Defaults to ninja in PATH.
+  QEMU_UAE_STATIC_DEPS  Set to 1/true/yes/on to enable --static-deps.
   QEMU_UAE_STRIP        Set to 0/false/no/off to keep symbols.
   QEMU_UAE_STRIP_TOOL   Strip executable. Defaults to llvm-strip or strip.
   MACOSX_DEPLOYMENT_TARGET
@@ -120,6 +123,10 @@ while [[ $# -gt 0 ]]; do
             strip_plugin=0
             shift
             ;;
+        --static-deps)
+            static_deps=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -143,6 +150,28 @@ case "${strip_plugin}" in
         strip_plugin=1
         ;;
 esac
+
+case "${static_deps}" in
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON)
+        static_deps=1
+        ;;
+    0|false|False|FALSE|no|No|NO|off|Off|OFF)
+        static_deps=0
+        ;;
+    *)
+        die "invalid QEMU_UAE_STATIC_DEPS value: ${static_deps}"
+        ;;
+esac
+
+if [[ "${static_deps}" == "1" ]]; then
+    case "${host_system}" in
+        MINGW*|MSYS*|CYGWIN*)
+            ;;
+        *)
+            die "--static-deps is currently supported only on Windows/MSYS2 hosts"
+            ;;
+    esac
+fi
 
 patch_files=()
 if [[ -n "${patch_file}" ]]; then
@@ -259,13 +288,24 @@ apply_qemu_patch_file() {
     local patch_file="$1"
     local patch_name
     patch_name="$(basename "${patch_file}")"
+    local forward_output
+    local reverse_output
+    forward_output="$(mktemp)"
+    reverse_output="$(mktemp)"
 
-    if (cd "${source_dir}" && patch -p1 --dry-run -f < "${patch_file}" >/dev/null); then
+    if (cd "${source_dir}" && patch -p1 --dry-run -f < "${patch_file}" >"${forward_output}" 2>&1); then
+        rm -f "${forward_output}" "${reverse_output}"
         echo "applying ${patch_name}"
         (cd "${source_dir}" && patch -p1 -f < "${patch_file}")
-    elif (cd "${source_dir}" && patch -p1 -R --dry-run -f < "${patch_file}" >/dev/null); then
+    elif (cd "${source_dir}" && patch -p1 -R --dry-run -f < "${patch_file}" >"${reverse_output}" 2>&1); then
+        rm -f "${forward_output}" "${reverse_output}"
         echo "${patch_name} already applied"
     else
+        echo "${patch_name} forward dry-run failed:" >&2
+        cat "${forward_output}" >&2
+        echo "${patch_name} reverse dry-run failed:" >&2
+        cat "${reverse_output}" >&2
+        rm -f "${forward_output}" "${reverse_output}"
         die "${patch_name} does not apply cleanly to ${source_dir}"
     fi
 }
@@ -337,11 +377,43 @@ build_qemu_uae() {
     local ninja
     ninja="$(find_ninja)" || die "ninja not found; set QEMU_UAE_NINJA"
 
+    local qemu_configure_args=()
+    if [[ "${static_deps}" == "1" ]]; then
+        local pkg_config_tool="${PKG_CONFIG:-}"
+        if [[ -z "${pkg_config_tool}" ]]; then
+            pkg_config_tool="$(command -v pkg-config || command -v pkgconf || true)"
+            [[ -n "${pkg_config_tool}" ]] || die "pkg-config not found"
+        fi
+        if command -v cygpath >/dev/null 2>&1; then
+            local pkg_config_exe="${pkg_config_tool%% *}"
+            local pkg_config_args=""
+            if [[ "${pkg_config_tool}" != "${pkg_config_exe}" ]]; then
+                pkg_config_args="${pkg_config_tool#${pkg_config_exe}}"
+            fi
+            pkg_config_exe="$(cygpath -m "${pkg_config_exe}")"
+            pkg_config_tool="${pkg_config_exe}${pkg_config_args}"
+        fi
+        case " ${pkg_config_tool} " in
+            *" --static "*)
+                export PKG_CONFIG="${pkg_config_tool}"
+                ;;
+            *)
+                export PKG_CONFIG="${pkg_config_tool} --static"
+                ;;
+        esac
+        qemu_configure_args+=(--static --extra-ldflags=-static)
+    fi
+    if ((${#configure_args[@]} > 0)); then
+        qemu_configure_args+=("${configure_args[@]}")
+    fi
+
     (
         cd "${source_dir}"
-        ./configure-qemu-uae \
-            --ninja="${ninja}" \
-            ${configure_args[@]+"${configure_args[@]}"}
+        local configure_command=(./configure-qemu-uae --ninja="${ninja}")
+        if ((${#qemu_configure_args[@]} > 0)); then
+            configure_command+=("${qemu_configure_args[@]}")
+        fi
+        "${configure_command[@]}"
     )
     "${ninja}" -C "${source_dir}/build" -j "${jobs}" "${plugin_name}"
 

@@ -1,0 +1,42 @@
+From 5944abcbf367f7fc5bb5a5bf8aa5124bf2809e3b Mon Sep 17 00:00:00 2001
+From: Dimitris Panokostas <midwan@users.noreply.github.com>
+Date: Tue, 16 Jun 2026 22:42:00 +0200
+Subject: [PATCH 8/8] meson: link iconv for static Windows UAE plugin
+
+Static MSYS2 GLib pulls in static gettext/libintl, which depends on
+libiconv. The lean UAE plugin build disables curses, so QEMU's optional
+iconv probe is skipped and the final plugin link misses libiconv.
+
+Add the iconv link dependency only for Windows static qemu-uae plugin
+builds.
+---
+ meson.build | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/meson.build b/meson.build
+index 91ecf5432..37d02a1fd 100644
+--- a/meson.build
++++ b/meson.build
+@@ -4447,6 +4447,10 @@ foreach target : target_dirs
+     # Build shared library for QEMU-UAE plugin instead of executable
+     if get_option('qemu_uae') and target_name == 'ppc'
+       qemu_uae_link_args = []
++      qemu_uae_dependencies = arch_deps + exe['dependencies']
++      if host_os == 'windows' and get_option('prefer_static')
++        qemu_uae_dependencies += declare_dependency(link_args: ['-liconv'])
++      endif
+       qemu_uae_link_depends = [block_syms, qemu_syms]
+       if host_os == 'darwin'
+         qemu_uae_exports = files('uae/qemu-uae-ld64.symbols')
+@@ -4464,7 +4468,7 @@ foreach target : target_dirs
+       emulator = shared_library('qemu-uae',
+                  install: true,
+                  c_args: c_args,
+-                 dependencies: arch_deps + exe['dependencies'],
++                 dependencies: qemu_uae_dependencies,
+                  objects: lib.extract_all_objects(recursive: true),
+                  link_depends: qemu_uae_link_depends,
+                  link_args: qemu_uae_link_args,
+-- 
+2.54.0
+
