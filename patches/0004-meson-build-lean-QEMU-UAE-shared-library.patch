@@ -206,9 +206,8 @@ new file mode 100644
 index 000000000..4a82508d7
 --- /dev/null
 +++ b/uae/qemu-uae-ld64.symbols
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,20 @@
 +_ppc_cpu_init
-+_ppc_cpu_flush_jit
 +_ppc_cpu_map_memory
 +_ppc_cpu_reset
 +_ppc_cpu_run_continuous
@@ -246,10 +245,9 @@ new file mode 100644
 index 000000000..c15ee3eb5
 --- /dev/null
 +++ b/uae/qemu-uae.symbols
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,25 @@
 +{
 +  global:
-+    ppc_cpu_flush_jit;
 +    ppc_cpu_init;
 +    ppc_cpu_map_memory;
 +    ppc_cpu_reset;
