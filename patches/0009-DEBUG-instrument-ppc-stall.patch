@@ -1,16 +1,18 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dimitris Panokostas <midwan@gmail.com>
-Date: Wed, 24 Jun 2026 12:40:00 +0200
-Subject: [PATCH] DEBUG: instrument PPC stall (NIP code dump + EXT IRQ log)
+Date: Wed, 24 Jun 2026 13:20:00 +0200
+Subject: [PATCH] DEBUG: instrument PPC stall (code + polled-EA dump, EXT IRQ)
 
-Diagnostic only (issue #2114): OS3/WarpUP PPC spins at a fixed NIP while the
-host runs at full speed. Log every m68k->PPC external interrupt with the PPC
-NIP, and on every pause dump NIP/LR/CTR/MSR/SRR0/SRR1/reservation plus 64 bytes
-of code around NIP (via cpu_memory_rw_debug) to Amiberry.log, so the spin loop
-can be disassembled. Revert before release.
+Diagnostic only (issue #2114): OS3/WarpUP PPC spins at a fixed NIP polling a
+byte in shared RAM while the host runs at full speed. Log every m68k->PPC
+external interrupt with the PPC NIP; on every pause dump NIP/LR/CTR/MSR/SRR0/
+SRR1/reservation, 64 bytes of code around NIP, and -- if the stuck insn is a
+D-form load -- decode its effective address and dump the polled memory (the
+m68k's current view of that RAM). Distinguishes "m68k never wrote the flag"
+(sequencing) from "PPC reads stale" (coherency). Revert before release.
 ---
---- a/uae/qemu-uae-cpu.c	2026-06-24 12:33:16.617756400 +0200
-+++ b/uae/qemu-uae-cpu.c	2026-06-24 12:33:59.742993200 +0200
+--- a/uae/qemu-uae-cpu.c
++++ b/uae/qemu-uae-cpu.c
 @@ -325,6 +325,8 @@
  
  void PPCAPI qemu_uae_ppc_external_interrupt(bool enable)
@@ -20,12 +22,13 @@ can be disassembled. Revert before release.
      ppc_set_irq(state.cpu, PPC_INTERRUPT_EXT, enable ? 1 : 0);
  }
  
-@@ -391,8 +393,28 @@
+@@ -391,8 +393,67 @@
  static void qemu_uae_log_cpu_state(void)
  {
      int flags = 0;
 +    CPUPPCState *env = state.env;
 +    uint8_t code[64];
++    uint8_t ib[4];
 +    uint32_t base = ((uint32_t)env->nip & ~(uint32_t)0xf) - 16u;
      uae_log("QEMU: PPC CPU dump:\n");
      cpu_dump_state(CPU(state.cpu), stderr, flags);
@@ -45,6 +48,44 @@ can be disassembled. Revert before release.
 +        }
 +    } else {
 +        uae_log("QEMU: INSN read failed at %08x\n", base);
++    }
++    /* If the stuck instruction is a D-form load, decode its effective
++     * address and dump the polled memory (the m68k's view of that RAM,
++     * since cpu_memory_rw_debug reads current host RAM via a fresh page
++     * walk). POLLMEM==expected-but-still-looping => PPC's cached TLB is
++     * stale (coherency); POLLMEM!=expected => m68k never wrote it
++     * (sequencing). pa shows the VA->PA mapping for the polled address. */
++    if (cpu_memory_rw_debug(CPU(state.cpu), (uint32_t)env->nip, ib, 4, false) == 0) {
++        uint32_t in = ((uint32_t)ib[0] << 24) | ((uint32_t)ib[1] << 16) |
++                      ((uint32_t)ib[2] << 8) | (uint32_t)ib[3];
++        uint32_t op = in >> 26;
++        /* lwz/lbz/lhz/lha and their update forms */
++        if (op == 32 || op == 33 || op == 34 || op == 35 ||
++            op == 40 || op == 41 || op == 42 || op == 43) {
++            int ra = (int)((in >> 16) & 0x1f);
++            int32_t d = (int32_t)(int16_t)(in & 0xffff);
++            uint32_t ea = (uint32_t)env->gpr[ra] + (uint32_t)d;
++            uint8_t poll[32];
++            uint32_t pbase = ea & ~(uint32_t)0xf;
++            hwaddr pa = cpu_get_phys_page_debug(CPU(state.cpu),
++                                                ea & ~(target_ulong)0xfff);
++            uae_log("QEMU: POLL insn=%08x op=%u ra=r%d d=%d ea=%08x pa=%08x\n",
++                    in, op, ra, d, ea, (uint32_t)pa);
++            if (cpu_memory_rw_debug(CPU(state.cpu), pbase, poll, sizeof(poll),
++                                    false) == 0) {
++                for (int i = 0; i < (int)sizeof(poll); i += 16) {
++                    uae_log("QEMU: POLLMEM %08x: %02x%02x%02x%02x %02x%02x%02x%02x "
++                            "%02x%02x%02x%02x %02x%02x%02x%02x\n",
++                            pbase + (uint32_t)i,
++                            poll[i + 0], poll[i + 1], poll[i + 2], poll[i + 3],
++                            poll[i + 4], poll[i + 5], poll[i + 6], poll[i + 7],
++                            poll[i + 8], poll[i + 9], poll[i + 10], poll[i + 11],
++                            poll[i + 12], poll[i + 13], poll[i + 14], poll[i + 15]);
++                }
++            } else {
++                uae_log("QEMU: POLLMEM read failed at %08x\n", pbase);
++            }
++        }
 +    }
  }
  
