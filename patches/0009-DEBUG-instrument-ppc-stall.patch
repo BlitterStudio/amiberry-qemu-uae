@@ -1,19 +1,51 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dimitris Panokostas <midwan@gmail.com>
-Date: Wed, 24 Jun 2026 13:20:00 +0200
-Subject: [PATCH] DEBUG: instrument PPC stall (code + polled-EA dump, EXT IRQ)
+Date: Wed, 24 Jun 2026 13:55:00 +0200
+Subject: [PATCH] DEBUG: instrument PPC stall (IO traffic + polled-EA + EXT IRQ)
 
-Diagnostic only (issue #2114): OS3/WarpUP PPC spins at a fixed NIP polling a
-byte in shared RAM while the host runs at full speed. Log every m68k->PPC
-external interrupt with the PPC NIP; on every pause dump NIP/LR/CTR/MSR/SRR0/
-SRR1/reservation, 64 bytes of code around NIP, and -- if the stuck insn is a
-D-form load -- decode its effective address and dump the polled memory (the
-m68k's current view of that RAM). Distinguishes "m68k never wrote the flag"
-(sequencing) from "PPC reads stale" (coherency). Revert before release.
+Diagnostic only (issue #2114): OS3/WarpUP PPC spins polling a shared-RAM byte
+(0x..ab5f) for value 2 that never arrives; m68k handshake stalls. Log every PPC
+indirect IO read/write (IOR/IOW -- shows PPC->m68k INTREQ signalling), every
+m68k->PPC external interrupt (EXT IRQ), and on pause dump CPU state + code at
+NIP + the decoded polled effective address/value/phys-mapping. Revert before
+release.
 ---
 --- a/uae/qemu-uae-cpu.c
 +++ b/uae/qemu-uae-cpu.c
-@@ -325,6 +325,8 @@
+@@ -54,22 +54,26 @@
+ 
+ static uint64_t indirect_read(void *opaque, hwaddr addr, unsigned size)
+ {
++    uint64_t retval = 0;
+     addr += (uintptr_t) opaque;
+     if (size == 8) {
+-        uint64_t retval = 0;
+         uae_ppc_io_mem_read64(addr, &retval);
+-        return retval;
+     } else {
+-        uint32_t retval = 0;
+-        uae_ppc_io_mem_read(addr, &retval, size);
+-        return retval;
+-    }
++        uint32_t r32 = 0;
++        uae_ppc_io_mem_read(addr, &r32, size);
++        retval = r32;
++    }
++    uae_log("QEMU: IOR %08x = %08x sz%u\n", (uint32_t)addr,
++            (uint32_t)retval, size);
++    return retval;
+ }
+ 
+ static void indirect_write(void *opaque, hwaddr addr, uint64_t data,
+                            unsigned size)
+ {
+     addr += (uintptr_t) opaque;
++    uae_log("QEMU: IOW %08x = %08x sz%u\n", (uint32_t)addr,
++            (uint32_t)data, size);
+     if (size == 8) {
+         uae_ppc_io_mem_write64(addr, data);
+     } else {
+@@ -325,6 +329,8 @@
  
  void PPCAPI qemu_uae_ppc_external_interrupt(bool enable)
  {
@@ -22,7 +54,7 @@ m68k's current view of that RAM). Distinguishes "m68k never wrote the flag"
      ppc_set_irq(state.cpu, PPC_INTERRUPT_EXT, enable ? 1 : 0);
  }
  
-@@ -391,8 +393,67 @@
+@@ -391,8 +397,67 @@
  static void qemu_uae_log_cpu_state(void)
  {
      int flags = 0;
