@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dimitris Panokostas <midwan@gmail.com>
+Date: Wed, 24 Jun 2026 00:00:00 +0200
+Subject: [PATCH] uae: flush JIT translation blocks synchronously on reset
+
+Frode's original qemu-uae plugin and the QEMU 9.2.4 build flush the PPC
+translation block cache synchronously in ppc_cpu_reset(). QEMU 11 split the
+old tb_flush() into a synchronous tb_flush__exclusive_or_serial() and an
+asynchronous queue_tb_flush(); the latter only schedules the flush on the
+CPU work queue (processed at the next cpu_loop_exit). With the async variant
+the PPC can execute stale translation blocks left over from before the reset
+before the queued flush runs, so WarpOS / AmigaOS 3.x boots to a black screen
+(BlitterStudio/amiberry#2114) while AmigaOS 4 (different timing) survives.
+
+Restore the synchronous flush. The reset path always runs with the PPC paused
+or not yet started, i.e. the VM is not in RUN_STATE_RUNNING, which is exactly
+when tb_flush__exclusive_or_serial() may be called directly. Fall back to the
+async queue if a reset ever arrives while the VM is running.
+---
+ uae/qemu-uae-cpu.c | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+--- a/uae/qemu-uae-cpu.c
++++ b/uae/qemu-uae-cpu.c
+@@ -367,7 +367,25 @@
+     uae_log("QEMU: NIP = 0x%08x\n", state.env->nip);
+ 
+     uae_log("QEMU: Flushing all JIT translation blocks\n");
+-    queue_tb_flush(CPU(state.cpu));
++    /*
++     * Frode's original qemu-uae plugin and the QEMU 9.2.4 build flush the
++     * translation block cache *synchronously* on reset. QEMU 11 split the old
++     * tb_flush() into a synchronous tb_flush__exclusive_or_serial() and an
++     * asynchronous queue_tb_flush(), the latter only scheduling the flush on
++     * the CPU work queue (processed at the next cpu_loop_exit). With the async
++     * variant the PPC can execute stale translation blocks left over from
++     * before the reset before the queued flush runs, so WarpOS / AmigaOS 3.x
++     * boots to a black screen (issue #2114). Restore the synchronous flush:
++     * the reset path always runs with the PPC paused / not yet started, i.e.
++     * the VM is not in RUN_STATE_RUNNING, which is exactly when
++     * tb_flush__exclusive_or_serial() is allowed to be called directly. Fall
++     * back to the async queue if a reset ever arrives while the VM is running.
++     */
++    if (!runstate_is_running()) {
++        tb_flush__exclusive_or_serial();
++    } else {
++        queue_tb_flush(CPU(state.cpu));
++    }
+ }
+ 
+ static uint32_t qemu_uae_get_cr(const CPUPPCState *env)
+--
+2.40.0
