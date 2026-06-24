@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dimitris Panokostas <midwan@gmail.com>
+Date: Wed, 24 Jun 2026 12:40:00 +0200
+Subject: [PATCH] DEBUG: instrument PPC stall (NIP code dump + EXT IRQ log)
+
+Diagnostic only (issue #2114): OS3/WarpUP PPC spins at a fixed NIP while the
+host runs at full speed. Log every m68k->PPC external interrupt with the PPC
+NIP, and on every pause dump NIP/LR/CTR/MSR/SRR0/SRR1/reservation plus 64 bytes
+of code around NIP (via cpu_memory_rw_debug) to Amiberry.log, so the spin loop
+can be disassembled. Revert before release.
+---
+--- a/uae/qemu-uae-cpu.c	2026-06-24 12:33:16.617756400 +0200
++++ b/uae/qemu-uae-cpu.c	2026-06-24 12:33:59.742993200 +0200
+@@ -325,6 +325,8 @@
+ 
+ void PPCAPI qemu_uae_ppc_external_interrupt(bool enable)
+ {
++    uae_log("QEMU: EXT IRQ %d nip=%08x\n", enable ? 1 : 0,
++            (uint32_t)(state.env ? state.env->nip : 0));
+     ppc_set_irq(state.cpu, PPC_INTERRUPT_EXT, enable ? 1 : 0);
+ }
+ 
+@@ -391,8 +393,28 @@
+ static void qemu_uae_log_cpu_state(void)
+ {
+     int flags = 0;
++    CPUPPCState *env = state.env;
++    uint8_t code[64];
++    uint32_t base = ((uint32_t)env->nip & ~(uint32_t)0xf) - 16u;
+     uae_log("QEMU: PPC CPU dump:\n");
+     cpu_dump_state(CPU(state.cpu), stderr, flags);
++    uae_log("QEMU: DUMP nip=%08x lr=%08x ctr=%08x msr=%08x srr0=%08x srr1=%08x res=%08x\n",
++            (uint32_t)env->nip, (uint32_t)env->lr, (uint32_t)env->ctr,
++            (uint32_t)env->msr, (uint32_t)env->spr[SPR_SRR0],
++            (uint32_t)env->spr[SPR_SRR1], (uint32_t)env->reserve_addr);
++    if (cpu_memory_rw_debug(CPU(state.cpu), base, code, sizeof(code), false) == 0) {
++        for (int i = 0; i < (int)sizeof(code); i += 16) {
++            uae_log("QEMU: INSN %08x: %02x%02x%02x%02x %02x%02x%02x%02x "
++                    "%02x%02x%02x%02x %02x%02x%02x%02x\n",
++                    base + (uint32_t)i,
++                    code[i + 0], code[i + 1], code[i + 2], code[i + 3],
++                    code[i + 4], code[i + 5], code[i + 6], code[i + 7],
++                    code[i + 8], code[i + 9], code[i + 10], code[i + 11],
++                    code[i + 12], code[i + 13], code[i + 14], code[i + 15]);
++        }
++    } else {
++        uae_log("QEMU: INSN read failed at %08x\n", base);
++    }
+ }
+ 
+ void PPCAPI ppc_cpu_set_state(int set_state)
