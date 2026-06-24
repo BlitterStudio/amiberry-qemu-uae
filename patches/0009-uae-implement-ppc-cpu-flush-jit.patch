@@ -1,26 +1,21 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dimitris Panokostas <midwan@gmail.com>
-Date: Wed, 24 Jun 2026 15:30:00 +0200
-Subject: [PATCH] uae: implement and export ppc_cpu_flush_jit
+Date: Wed, 24 Jun 2026 17:50:00 +0200
+Subject: [PATCH] uae: implement and export ppc_cpu_flush_jit (DEBUG instrumented)
 
-AmigaOS 3.x / WarpOS drives the PPC as a coprocessor: the m68k loads and
-patches PPC code/data directly in shared RAM. Those writes bypass QEMU's PPC
-softmmu, so the PPC keeps executing stale translation blocks and the early
-m68k<->PPC handshake deadlocks (BlitterStudio/amiberry#2114). UAE calls
-ppc_cpu_flush_jit() from uae_ppc_execute_check()/quick() to invalidate the TB
-cache; the old qemu-uae plugin exported it but the QEMU 11 port dropped it,
-so the call became a no-op. Reinstate it (queued cross-thread tb flush) and
-export it from the plugin. UAE gates the call on the m68k being the active
-CPU, so it does not retranslate during OS4 PPC-only execution.
+Implements + exports ppc_cpu_flush_jit so UAE can invalidate stale PPC TBs when
+the m68k patches PPC code in shared RAM (issue #2114). DEBUG: logs QUEUED (m68k
+thread) vs EXECUTED (PPC thread) to confirm whether the queued flush actually
+runs during the WarpOS handshake. Strip the logging once confirmed.
 ---
- uae/qemu-uae-cpu.c       | 16 ++++++++++++++++
+ uae/qemu-uae-cpu.c        | 30 ++++++++++++++++++++++++++++++
  uae/qemu-uae-ld64.symbols |  1 +
  uae/qemu-uae.symbols      |  1 +
- 3 files changed, 18 insertions(+)
+ 3 files changed, 32 insertions(+)
 
 --- a/uae/qemu-uae-cpu.c
 +++ b/uae/qemu-uae-cpu.c
-@@ -388,6 +388,25 @@
+@@ -388,6 +388,42 @@
      }
  }
  
@@ -33,13 +28,30 @@ CPU, so it does not retranslate during OS4 PPC-only execution.
 + * active CPU (OS3 / coprocessor mode), never when it is halted and the PPC is
 + * primary (OS4), so it does not retranslate during normal PPC-only execution.
 + */
++/* DEBUG #2114: runs on the PPC vcpu thread at a safe point (where a synchronous
++ * flush is legal). Logs so we can tell whether queued flushes actually execute. */
++static void uae_flush_jit_cb(CPUState *cpu, run_on_cpu_data data)
++{
++    static unsigned long executed = 0;
++    executed++;
++    if ((executed & 255) == 0) {
++        uae_log("QEMU: flush_jit EXECUTED %lu (PPC thread)\n", executed);
++    }
++    tb_flush__exclusive_or_serial();
++}
++
 +void PPCAPI ppc_cpu_flush_jit(void)
 +{
++    static unsigned long queued = 0;
 +    if (!state.cpu) {
 +        return;
 +    }
++    queued++;
++    if ((queued & 255) == 0) {
++        uae_log("QEMU: flush_jit QUEUED %lu\n", queued);
++    }
 +    qemu_uae_lock_if_needed();
-+    queue_tb_flush(CPU(state.cpu));
++    async_safe_run_on_cpu(CPU(state.cpu), uae_flush_jit_cb, RUN_ON_CPU_NULL);
 +    qemu_uae_unlock_if_needed();
 +}
 +
