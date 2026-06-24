@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Dimitris Panokostas <midwan@gmail.com>
-Date: Wed, 24 Jun 2026 20:10:00 +0200
+Date: Wed, 24 Jun 2026 21:30:00 +0200
 Subject: [PATCH] uae: implement and export ppc_cpu_flush_jit (vcpu safe-point)
 
 AmigaOS 3.x / WarpOS patches PPC code+page tables directly in shared RAM,
@@ -9,13 +9,14 @@ m68k<->PPC handshake deadlocks (BlitterStudio/amiberry#2114). The old qemu-uae
 plugin exported ppc_cpu_flush_jit; the QEMU 11 port dropped it. Reinstate +
 export it. In QEMU 11 a synchronous flush is only legal on the vcpu in serial
 context, so ppc_cpu_flush_jit() (called by UAE from the m68k thread at an
-m68k->PPC handoff) only sets the global uae_flush_requested flag; the PPC vcpu
-consumes it synchronously at a cpu_exec() safe point (see the cpu-exec patch).
+m68k->PPC handoff) sets the global uae_flush_requested flag and cpu_exit()s the
+vcpu so it leaves any direct-chained TB run and returns to cpu_exec_loop(),
+where the flag is consumed synchronously (see the cpu-exec patch).
 ---
- uae/qemu-uae-cpu.c        | 13 +++++++++++++
+ uae/qemu-uae-cpu.c        | 24 ++++++++++++++++++++++++
  uae/qemu-uae-ld64.symbols |  1 +
  uae/qemu-uae.symbols      |  1 +
- 3 files changed, 15 insertions(+)
+ 3 files changed, 26 insertions(+)
 
 --- a/uae/qemu-uae-cpu.c
 +++ b/uae/qemu-uae-cpu.c
@@ -37,13 +38,25 @@ consumes it synchronously at a cpu_exec() safe point (see the cpu-exec patch).
  void PPCAPI ppc_cpu_run_continuous(void)
  {
      uae_log("QEMU: Running main loop\n");
-@@ -388,6 +399,11 @@
+@@ -388,6 +399,23 @@
      }
  }
  
 +void PPCAPI ppc_cpu_flush_jit(void)
 +{
 +    qatomic_set(&uae_flush_requested, 1);
++    /*
++     * Kick the PPC vcpu out of any direct-chained TB run. Setting the flag
++     * alone is not enough: QEMU patches directly-chained TBs to jump to each
++     * other entirely in generated code, so a tight loop can keep executing
++     * (possibly stale) translations without ever returning to cpu_exec_loop()
++     * where uae_flush_requested is consumed. cpu_exit() requests an exit at the
++     * next TB boundary, guaranteeing the flush is honoured promptly. Safe to
++     * call from the m68k thread (sets exit_request + kicks the vcpu).
++     */
++    if (state.cpu) {
++        cpu_exit(CPU(state.cpu));
++    }
 +}
 +
  static void qemu_uae_log_cpu_state(void)
