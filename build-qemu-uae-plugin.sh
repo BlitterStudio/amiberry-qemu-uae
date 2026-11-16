@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-qemu_version="11.0.1"
+qemu_version="11.1.3"
 qemu_archive="qemu-${qemu_version}.tar.xz"
 qemu_url_default="https://download.qemu.org/${qemu_archive}"
-qemu_sha256="0d235f5820278d914a3155ec27af8e4258d697ea892895570807d69c0cb8cd64"
+qemu_sha256="5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 patch_dir="${QEMU_UAE_PATCH_DIR:-${script_dir}/patches}"
@@ -105,6 +105,11 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || die "--patch-dir requires an argument"
             patch_dir="$2"
             shift 2
+            ;;
+        -j[0-9]*)
+            jobs="${1#-j}"
+            [[ "${jobs}" =~ ^[0-9]+$ ]] || die "invalid job count: ${jobs}"
+            shift
             ;;
         -j|--jobs)
             [[ $# -ge 2 ]] || die "$1 requires an argument"
@@ -293,11 +298,11 @@ apply_qemu_patch_file() {
     forward_output="$(mktemp)"
     reverse_output="$(mktemp)"
 
-    if (cd "${source_dir}" && patch -p1 --dry-run -f < "${patch_file}" >"${forward_output}" 2>&1); then
+    if (cd "${source_dir}" && patch -p1 --fuzz=0 --dry-run -f < "${patch_file}" >"${forward_output}" 2>&1); then
         rm -f "${forward_output}" "${reverse_output}"
         echo "applying ${patch_name}"
-        (cd "${source_dir}" && patch -p1 -f < "${patch_file}")
-    elif (cd "${source_dir}" && patch -p1 -R --dry-run -f < "${patch_file}" >"${reverse_output}" 2>&1); then
+        (cd "${source_dir}" && patch -p1 --fuzz=0 -f < "${patch_file}")
+    elif (cd "${source_dir}" && patch -p1 -R --fuzz=0 --dry-run -f < "${patch_file}" >"${reverse_output}" 2>&1); then
         rm -f "${forward_output}" "${reverse_output}"
         echo "${patch_name} already applied"
     else

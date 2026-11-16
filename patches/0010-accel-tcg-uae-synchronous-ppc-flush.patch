@@ -15,9 +15,7 @@ patched code before it executes it, fixing the WarpOS handshake deadlock.
 
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
-@@ -46,6 +46,19 @@
- #include "tb-context.h"
- #include "tb-internal.h"
+@@ -48,2 +48,16 @@
  #include "internal-common.h"
 +#include "exec/tb-flush.h"
 +#include "exec/cputlb.h"
@@ -32,9 +30,8 @@ patched code before it executes it, fixing the WarpOS handshake deadlock.
 + * late and the WarpOS m68k<->PPC handshake has already desynced.
 + */
 +extern int uae_flush_requested;
- 
- /* -icount align implementation. */
- 
++
+ #if !defined(CONFIG_USER_ONLY)
 @@ -940,6 +953,18 @@
          int tb_exit = 0;
  

@@ -9,14 +9,17 @@ QEMU as an Amiberry-compatible PPC plugin shared library.
 Build qemu-uae for the PPC target, request static PIC support,
 limit exported symbols to the host ABI, and disable unrelated tools,
 UI, audio, block, network, smartcard, RDMA, and host-library backends.
+
+For speed, build with LTO and without semantic interposition, QOM cast
+debugging, TCG plugin hooks, and the per-call hardening flags.
 ---
- configure-qemu-uae        | 112 ++++++++++++++++++++++++++++++++++++++
- meson.build               | 31 +++++++++++++
+ configure-qemu-uae        | 114 +++++++++++++++++++++++++++++++++++++
+ meson.build               | 37 +++++++++++++-
  meson_options.txt         |  2 +
  uae/qemu-uae-ld64.symbols | 21 ++++++++
  uae/qemu-uae-main.c       |  2 -
  uae/qemu-uae.symbols      | 26 ++++++++++
- 6 files changed, 192 insertions(+), 2 deletions(-)
+ 6 files changed, 199 insertions(+), 3 deletions(-)
  create mode 100755 configure-qemu-uae
  create mode 100644 uae/qemu-uae-ld64.symbols
  create mode 100644 uae/qemu-uae.symbols
@@ -26,7 +29,7 @@ new file mode 100755
 index 000000000..346576135
 --- /dev/null
 +++ b/configure-qemu-uae
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,114 @@
 +#!/bin/sh -e
 +#
 +# Configure script for building QEMU-UAE plugin
@@ -51,7 +54,7 @@ index 000000000..346576135
 +    export CXX
 +    ;;
 +*)
-+    EXTRA_CFLAGS="$EXTRA_CFLAGS -fPIC"
++    EXTRA_CFLAGS="$EXTRA_CFLAGS -fPIC -fno-semantic-interposition"
 +    ;;
 +esac
 +
@@ -63,6 +66,9 @@ index 000000000..346576135
 +    -Db_staticpic=true \
 +    --disable-werror \
 +    --disable-strip \
++    --disable-qom-cast-debug \
++    --disable-plugins \
++    --enable-lto \
 +    --disable-tools \
 +    --disable-docs \
 +    --disable-sdl \
@@ -118,7 +124,6 @@ index 000000000..346576135
 +    --disable-linux-aio \
 +    --disable-linux-io-uring \
 +    --disable-seccomp \
-+    --disable-glusterfs \
 +    --disable-capstone \
 +    --disable-numa \
 +    --disable-opengl \
@@ -143,7 +148,20 @@ diff --git a/meson.build b/meson.build
 index 94feda2eb..8b0145c76 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -2446,6 +2446,7 @@ config_host_data.set('CONFIG_COCOA', cocoa.found())
+@@ -709,7 +709,11 @@ if cc.compiles('extern struct { void (*cb)(void); } s; void f(void) { s.cb(); }',
+     hardening_flags += '-fzero-call-used-regs=used-gpr'
+ endif
+ 
+-qemu_common_flags += hardening_flags
++# The plugin only runs the user's own Amiga software; skip hardening that
++# costs on every function call and stack frame.
++if not get_option('qemu_uae')
++  qemu_common_flags += hardening_flags
++endif
+ 
+ # Collect warning flags we want to set, sorted alphabetically
+ warn_flags = [
+@@ -2446,6 +2450,7 @@ config_host_data.set('CONFIG_COCOA', cocoa.found())
  config_host_data.set('CONFIG_DARWIN', host_os == 'darwin')
  config_host_data.set('CONFIG_FDT', fdt.found())
  config_host_data.set('CONFIG_FUZZ', get_option('fuzzing'))
@@ -151,7 +169,7 @@ index 94feda2eb..8b0145c76 100644
  config_host_data.set('CONFIG_GCOV', get_option('b_coverage'))
  config_host_data.set('CONFIG_LIBUDEV', libudev.found())
  config_host_data.set('CONFIG_LINUX', host_os == 'linux')
-@@ -4441,6 +4442,36 @@ foreach target : target_dirs
+@@ -4441,6 +4446,36 @@ foreach target : target_dirs
        exe_name += '-unsigned'
      endif
  

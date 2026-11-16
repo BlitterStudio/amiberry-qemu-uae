@@ -357,7 +357,7 @@ jobs:
           cat > RELEASE-NOTES.md <<EOF
           QEMU-UAE PPC plugin artifacts for Amiberry.
 
-          - QEMU: 11.0.1
+          - QEMU: 11.1.3
           - QEMU-UAE API: 3.8
           - Source commit: ${GITHUB_SHA}
           - Code signing: handled by Amiberry packaging after the plugin is bundled

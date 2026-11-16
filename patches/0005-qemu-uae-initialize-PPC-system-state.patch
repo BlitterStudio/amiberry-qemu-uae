@@ -3,7 +3,7 @@ From: Stefan Reinauer <stefan.reinauer@coreboot.org>
 Date: Mon, 25 May 2026 09:24:11 -0700
 Subject: [PATCH 5/6] qemu-uae: initialize PPC system state
 
-Initialize the QEMU 11.0 subsystem path before realizing the PPC CPU.
+Initialize the QEMU subsystem path before realizing the PPC CPU.
 
 Create a minimal machine object, attach the required containers, and
 wire TCG for the plugin build.
@@ -12,8 +12,8 @@ Initialize and reset the PPC timebase so CyberStorm PPC execution can
 run past the board ROM handoff.
 ---
  uae/qemu-uae-cpu.c  |  2 ++
- uae/qemu-uae-main.c | 66 +++++++++++++++++++++++++++++++++++++++------
- 2 files changed, 60 insertions(+), 8 deletions(-)
+ uae/qemu-uae-main.c | 71 +++++++++++++++++++++++++++++++++++++++++++------
+ 2 files changed, 65 insertions(+), 8 deletions(-)
 
 diff --git a/uae/qemu-uae-cpu.c b/uae/qemu-uae-cpu.c
 index e4ff7fa04..b8db7a404 100644
@@ -39,20 +39,22 @@ diff --git a/uae/qemu-uae-main.c b/uae/qemu-uae-main.c
 index ebe0543ad..ec76c2b38 100644
 --- a/uae/qemu-uae-main.c
 +++ b/uae/qemu-uae-main.c
-@@ -21,8 +21,12 @@
+@@ -21,8 +21,14 @@
  #include "qemu/log.h"
  #include "qemu/module.h"
  #include "qemu/main-loop.h"
++#include "qemu/target-info-qom.h"
 +#include "qemu/accel.h"
  #include "qemu-version.h"
  #include "qapi/error.h"
 +#include "qom/object.h"
 +#include "exec/cpu-common.h"
 +#include "hw/core/boards.h"
++#include "system/memory-internal.h"
  #include "system/system.h"
  #include "system/cpus.h"
  #include "system/runstate.h"
-@@ -59,6 +63,53 @@ static struct {
+@@ -59,6 +64,53 @@ static struct {
      bool exit_main_loop;
  } state;
  
@@ -85,7 +87,7 @@ index ebe0543ad..ec76c2b38 100644
 +        object_property_add_new_container(OBJECT(current_machine),
 +                                          containers[i]);
 +    }
-+    cpu_exec_init_all();
++    machine_memory_init();
 +
 +    accel_class = accel_find("tcg");
 +    if (!accel_class) {
@@ -106,19 +108,22 @@ index ebe0543ad..ec76c2b38 100644
  void qemu_uae_set_started(void)
  {
      state.started = true;
-@@ -89,9 +140,8 @@ static bool initialize(void)
+@@ -89,9 +141,11 @@ static bool initialize(void)
      uae_log("QEMU: Initialize QEMU-UAE (QEMU %s + API %d.%d.%d)\n",
              QEMU_FULL_VERSION, major, minor, revision);
  
 -    /* Initialize the class system (and probably other stuff) */
 -    uae_log("QEMU: MODULE_INIT_QOM\n");
 -    module_call_init(MODULE_INIT_QOM);
++    /* As system/vl.c: target info must be set before any QOM type init. */
++    module_call_init(MODULE_INIT_TARGET_INFO);
++    target_info_qom_set_target();
 +    uae_log("QEMU: qemu_init_subsystems\n");
 +    qemu_init_subsystems();
  
      /* qemu_init_main_loop installs signals */
      /* FIXME: could conflict with UAE */
-@@ -99,14 +149,14 @@ static bool initialize(void)
+@@ -99,14 +153,14 @@ static bool initialize(void)
      if (err) {
          uae_log("QEMU: qemu_init_main_loop failed: %s\n", error_get_pretty(err));
          error_free(err);
