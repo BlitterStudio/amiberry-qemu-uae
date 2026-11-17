@@ -12,17 +12,82 @@ no longer invalidated translations. After a warm Amiga reset AmigaOS 4
 loaded programs over memory that held earlier code and crashed (ISI/DSI
 gurus).
 
-Keep the region when its backing is unchanged, and otherwise unparent it
+Keep the region when its backing is unchanged, and otherwise remove it
 and add a new one so the old RAMBlock is released.
+
+Give each dynamic region its own QOM owner. FlatViews retain that owner,
+so dropping the mapping's reference defers destruction until the last
+reader releases the old view. Apply this to replacement, deletion, and
+bulk remapping; the host does not always pause the PPC before remapping.
 ---
- uae/qemu-uae-cpu.c | 28 +++++++++++++++++-----------
- 1 file changed, 17 insertions(+), 11 deletions(-)
+ uae/qemu-uae-cpu.c | 62 +++++++++++++++++++++++++++++++++++++++---------------
+ 1 file changed, 46 insertions(+), 16 deletions(-)
 
 diff --git a/uae/qemu-uae-cpu.c b/uae/qemu-uae-cpu.c
-index 589140b..571d4d9 100644
 --- a/uae/qemu-uae-cpu.c
 +++ b/uae/qemu-uae-cpu.c
-@@ -270,19 +270,25 @@ static void ppc_cpu_map_memory_single(PPCMemoryRegion *r)
+@@ -207,6 +207,26 @@ static void qemu_uae_unlock_if_needed(void)
+     }
+ }
+ 
++typedef struct UAEMemoryRegion {
++    Object parent_obj;
++    MemoryRegion mr;
++} UAEMemoryRegion;
++
++#define TYPE_UAE_MEMORY_REGION "uae-memory-region"
++
++static void uae_memory_region_register_types(void)
++{
++    static const TypeInfo info = {
++        .name = TYPE_UAE_MEMORY_REGION,
++        .parent = TYPE_OBJECT,
++        .instance_size = sizeof(UAEMemoryRegion),
++    };
++
++    type_register_static(&info);
++}
++
++type_init(uae_memory_region_register_types)
++
+ struct UAEregion
+ {
+     struct MemoryRegion *region;
+@@ -220,17 +240,21 @@ static void ppc_cpu_map_add(PPCMemoryRegion *r)
+ {
+     int i;
+     for (i = 0; i < MAX_MEMORY_REGIONS; i++) {
++        UAEMemoryRegion *owner;
+         MemoryRegion *mem;
+         struct UAEregion *region = &added_regions[i];
+         if (region->region != NULL)
+             continue;
+         uae_log("QEMU: %02d %08x [+%8x]  =>  %p  \"%s\")\n",
+                 i, r->start, r->size, r->memory, r->name);
+-        mem = g_new(MemoryRegion, 1);
++        /* FlatViews retain the owner until their RCU readers have finished. */
++        owner = (UAEMemoryRegion *)object_new(TYPE_UAE_MEMORY_REGION);
++        mem = &owner->mr;
+         if (r->memory) {
+-            memory_region_init_ram_ptr(mem, NULL, r->name, r->size, r->memory);
++            memory_region_init_ram_ptr(mem, OBJECT(owner), r->name, r->size,
++                                       r->memory);
+         } else {
+-            memory_region_init_io(mem, NULL, &indirect_ops,
++            memory_region_init_io(mem, OBJECT(owner), &indirect_ops,
+                                   (void *) (uintptr_t) r->start, r->name,
+                                   r->size);
+         }
+@@ -258,7 +282,7 @@ static void ppc_cpu_map_memory_single(PPCMemoryRegion *r)
+                         (uint32_t)mem->addr,
+                         mem->size);
+                 memory_region_del_subregion(get_system_memory(), mem->region);
+-                object_unparent(OBJECT(mem->region));
++                object_unref(memory_region_owner(mem->region));
+                 mem->region = NULL;
+             }
+         }
+@@ -270,19 +294,25 @@ static void ppc_cpu_map_memory_single(PPCMemoryRegion *r)
          if (mem->region == NULL)
              continue;
          if (mem->addr == r->start && mem->size == r->size) {
@@ -53,9 +118,18 @@ index 589140b..571d4d9 100644
 -            memory_region_add_subregion(
 -                get_system_memory(), r->start, mem->region);
 -            return;
-+            object_unparent(OBJECT(mem->region));
++            object_unref(memory_region_owner(mem->region));
 +            mem->region = NULL;
 +            break;
          }
      }
      ppc_cpu_map_add(r);
+@@ -304,7 +334,7 @@ static void ppc_cpu_map_memory_multi(PPCMemoryRegion *regions, int count)
+         if (mem->region == NULL)
+             continue;
+         memory_region_del_subregion(get_system_memory(), mem->region);
+-        object_unparent(OBJECT(mem->region));
++        object_unref(memory_region_owner(mem->region));
+         mem->region = NULL;
+     }
+ 

@@ -137,7 +137,7 @@ Amiberry validates the plugin major API version exactly and requires minor versi
 
 The ordered patch files in `patches/` are applied to the clean QEMU 11.1.3 release tarball. The build script checks its pinned SHA-256; `patches/README.md` explains each patch and identifies the Windows-only build patches. Keep patch filenames ordered and deterministic. The deck is maintained downstream, so do not replace it wholesale with another branch's patch directory: rebase patches selectively and retain the platform-specific and PPC JIT fixes.
 
-After refreshing, run:
+After changing the patch deck, run:
 
 ```bash
 bash -n build-qemu-uae-plugin.sh
