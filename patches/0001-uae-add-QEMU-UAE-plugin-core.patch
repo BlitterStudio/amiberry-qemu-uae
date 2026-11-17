@@ -136,18 +136,18 @@ diff --git a/system/runstate.c b/system/runstate.c
 index 2d4e95a21..48f427f23 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
-@@ -63,6 +63,10 @@
+@@ -64,7 +64,10 @@
  #include "system/tpm.h"
- #include "trace.h"
- 
 +#ifdef QEMU_UAE
 +#include "uae/qemu-uae.h"
 +#endif
-+
+ #include "ui/console.h"
+ 
+ #include "trace.h"
+ 
  static NotifierList exit_notifiers =
      NOTIFIER_LIST_INITIALIZER(exit_notifiers);
- 
-@@ -942,12 +946,25 @@ int qemu_main_loop(void)
+@@ -925,12 +928,25 @@ int qemu_main_loop(void)
      int status = EXIT_SUCCESS;
  
      while (!main_loop_should_exit(&status)) {

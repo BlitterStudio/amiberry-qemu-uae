@@ -6,10 +6,9 @@ The plugin is intentionally kept outside the Amiberry source tree. Amiberry owns
 
 ## Version
 
-- QEMU: 11.0.1
+- QEMU: 11.1.3
 - QEMU-UAE plugin API required by Amiberry: 3.8
-- QEMU-UAE reference branch: https://github.com/reinauer/qemu-uae/tree/qemu-v11.0.1-uae
-- Patch source: https://github.com/reinauer/uae-ppc-plugin
+- QEMU-UAE integration patch lineage: https://github.com/reinauer/uae-ppc-plugin
 
 ## Supported Artifacts
 
@@ -40,7 +39,7 @@ Tagged releases publish reusable plugin asset archives for Amiberry packaging:
 | `qemu-uae-windows-arm64.zip` | `qemu-uae.dll`; CI statically links GLib/zlib/MSYS2 plugin dependencies |
 | `SHA256SUMS` | Checksums for the release assets |
 
-Use a tag such as `v11.0.1-amiberry.1` for the first release. The plugin is expected to change rarely, so Amiberry releases can keep reusing the same plugin release tag until either the QEMU-UAE API or plugin patch deck changes.
+Use a tag such as `v11.1.3-amiberry.1` for the first release. The plugin is expected to change rarely, so Amiberry releases can keep reusing the same plugin release tag until either the QEMU-UAE API or plugin patch deck changes.
 
 These plugin artifacts are not signed here. Amiberry bundles the selected artifact into the final platform package, and the Amiberry release workflow handles macOS and Windows package signing after bundling.
 
@@ -136,16 +135,9 @@ Amiberry validates the plugin major API version exactly and requires minor versi
 
 ## Patch Deck
 
-The ordered patch files in `patches/` are applied to the clean QEMU 11.0.1 release tarball. Keep patch filenames ordered and deterministic.
+The ordered patch files in `patches/` are applied to the clean QEMU 11.1.3 release tarball. The build script checks its pinned SHA-256; `patches/README.md` explains each patch and identifies the Windows-only build patches. Keep patch filenames ordered and deterministic. The deck is maintained downstream, so do not replace it wholesale with another branch's patch directory: rebase patches selectively and retain the platform-specific and PPC JIT fixes.
 
-To refresh from the current upstream reference patch repo:
-
-```bash
-rm -f patches/*.patch
-cp /path/to/uae-ppc-plugin/patches/*.patch patches/
-```
-
-After refreshing, run:
+After changing the patch deck, run:
 
 ```bash
 bash -n build-qemu-uae-plugin.sh

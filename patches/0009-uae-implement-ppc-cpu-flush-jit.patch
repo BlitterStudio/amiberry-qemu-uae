@@ -13,11 +13,21 @@ m68k->PPC handoff) sets the global uae_flush_requested flag and cpu_exit()s the
 vcpu so it leaves any direct-chained TB run and returns to cpu_exec_loop(),
 where the flag is consumed synchronously (see the cpu-exec patch).
 ---
+ uae/ppc.h                 |  1 +
  uae/qemu-uae-cpu.c        | 24 ++++++++++++++++++++++++
  uae/qemu-uae-ld64.symbols |  1 +
  uae/qemu-uae.symbols      |  1 +
- 3 files changed, 26 insertions(+)
+ 4 files changed, 27 insertions(+)
 
+--- a/uae/ppc.h
++++ b/uae/ppc.h
+@@ -117,5 +117,6 @@
+ void PPCCALL ppc_cpu_pause(int pause);
+ void PPCCALL ppc_cpu_reset(void);
++void PPCCALL ppc_cpu_flush_jit(void);
+ 
+ #define PPC_CPU_STATE_RUNNING 1
+ #define PPC_CPU_STATE_PAUSED 2
 --- a/uae/qemu-uae-cpu.c
 +++ b/uae/qemu-uae-cpu.c
 @@ -343,6 +343,17 @@
@@ -38,8 +48,8 @@ where the flag is consumed synchronously (see the cpu-exec patch).
  void PPCAPI ppc_cpu_run_continuous(void)
  {
      uae_log("QEMU: Running main loop\n");
-@@ -388,6 +399,23 @@
-     }
+@@ -370,6 +381,23 @@
+     queue_tb_flush(CPU(state.cpu));
  }
  
 +void PPCAPI ppc_cpu_flush_jit(void)
