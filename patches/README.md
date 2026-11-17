@@ -26,8 +26,9 @@ script verifies the pinned archive SHA-256 before extraction.
 | `0008` | Links iconv for statically linked Windows dependencies. | Windows build |
 | `0009` | Exports `ppc_cpu_flush_jit()` to notify QEMU of PPC code changes. | Runtime correctness |
 | `0010` | Performs the requested TLB/TB flush at a safe PPC vCPU execution point. | Runtime correctness |
+| `0011` | Keeps one RAMBlock per mapped region so code-change detection survives remaps. | Runtime correctness |
 
 Patches `0001`–`0006` provide the plugin integration and guest compatibility;
-`0007`–`0008` are needed only for static Windows builds. `0009`–`0010` keep PPC
-execution coherent when UAE modifies shared PPC code or page tables. `0003`
-adds diagnostics rather than changing emulation behavior.
+`0007`–`0008` are needed only for static Windows builds. `0009`–`0011` keep PPC
+execution coherent when UAE modifies shared PPC code or page tables, or remaps
+memory. `0003` adds diagnostics rather than changing emulation behavior.

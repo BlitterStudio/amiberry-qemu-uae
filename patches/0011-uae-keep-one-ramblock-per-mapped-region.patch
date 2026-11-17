@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Christer Solskogen <christer.solskogen@gmail.com>
+Date: Tue, 17 Nov 2026 12:00:00 +0100
+Subject: [PATCH] uae: keep one RAMBlock per mapped PPC region
+
+ppc_cpu_map_memory_single() re-initialised a live MemoryRegion in place
+when UAE remapped a region at the same address and size. That leaked the
+old RAMBlock, which kept aliasing the same host memory. TCG keys
+translated code by the RAMBlock that qemu_ram_addr_from_host() returns,
+while guest stores dirty the RAMBlock of the current mapping, so writes
+no longer invalidated translations. After a warm Amiga reset AmigaOS 4
+loaded programs over memory that held earlier code and crashed (ISI/DSI
+gurus).
+
+Keep the region when its backing is unchanged, and otherwise unparent it
+and add a new one so the old RAMBlock is released.
+---
+ uae/qemu-uae-cpu.c | 28 +++++++++++++++++-----------
+ 1 file changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/uae/qemu-uae-cpu.c b/uae/qemu-uae-cpu.c
+index 589140b..571d4d9 100644
+--- a/uae/qemu-uae-cpu.c
++++ b/uae/qemu-uae-cpu.c
+@@ -270,19 +270,25 @@ static void ppc_cpu_map_memory_single(PPCMemoryRegion *r)
+         if (mem->region == NULL)
+             continue;
+         if (mem->addr == r->start && mem->size == r->size) {
++            bool is_ram = memory_region_is_ram(mem->region);
++            if (r->memory ? (is_ram && memory_region_get_ram_ptr(mem->region) ==
++                             r->memory)
++                          : !is_ram) {
++                /* Same backing: keep the region and its RAMBlock. */
++                return;
++            }
++            /*
++             * Never re-initialise a live MemoryRegion in place: that leaks its
++             * RAMBlock, which keeps aliasing the same host memory. TCG then
++             * keys translated code by one RAMBlock while guest stores dirty
++             * the other, so self-modifying code (e.g. a program loaded over
++             * old code after a warm reboot) keeps running stale translations.
++             */
+             uae_log("QEMU: region %02d replaced\n", i);
+             memory_region_del_subregion(get_system_memory(), mem->region);
+-            if (r->memory) {
+-                memory_region_init_ram_ptr(mem->region, NULL, r->name, r->size,
+-                                           r->memory);
+-            } else {
+-                memory_region_init_io(
+-                    mem->region, NULL, &indirect_ops,
+-                    (void *) (uintptr_t) r->start, r->name, r->size);
+-            }
+-            memory_region_add_subregion(
+-                get_system_memory(), r->start, mem->region);
+-            return;
++            object_unparent(OBJECT(mem->region));
++            mem->region = NULL;
++            break;
+         }
+     }
+     ppc_cpu_map_add(r);
